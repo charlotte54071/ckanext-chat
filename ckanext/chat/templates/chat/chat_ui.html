@@ -1,0 +1,29 @@
+{% extends "page.html" %}
+{% import 'macros/form.html' as form %}
+
+{% block subtitle %}{{ _("Chat") }}{% endblock %}
+
+{% block breadcrumb_content %}
+  <li class="active">{{ h.nav_link(_("Chat"), named_route='chat.chat') }}</li>
+{% endblock %}
+
+{% block primary_content %}
+  <section class="module">
+    <div class="module-content">
+      {% block page_primary_action %}
+      {% endblock %}
+      
+      {% block chat %}
+      {% endblock %}
+    </div>
+
+    {% block page_pagination %}
+    {% endblock %}
+  </section>
+{% endblock %}
+
+
+{% block secondary_content %}
+    {% block form %}
+    {% endblock %}
+{% endblock %}
