@@ -1,0 +1,38 @@
+[project]
+name = "ckanext-chat"
+version = "0.0.1"
+description = " Configurable Chat Interface for CKAN."
+readme = "README.md"
+authors = [
+    {name = "Thomas Hanke", email = "thomas.hanke82@gmail.com"}
+]
+license = {text = "AGPL"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+
+keywords = [ "CKAN", "Chat", "UI", "Extension", ]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Mat-O-Lab/ckanext-chat"
+
+[project.entry-points."ckan.plugins"]
+chat = "ckanext.chat.plugin:ChatPlugin"
+
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+filterwarnings = [
+        "ignore::sqlalchemy.exc.SADeprecationWarning",
+        "ignore::sqlalchemy.exc.SAWarning",
+        "ignore::DeprecationWarning",
+]
+addopts = "--ckan-ini test.ini"
