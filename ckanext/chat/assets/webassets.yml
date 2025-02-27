@@ -1,3 +1,9 @@
+chat-css:
+  filters: cssrewrite
+  output: ckanext-chat/%(version)s-chat.css
+  contents:
+    - style.css
+
 chat-js:
   filter: rjsmin
   output: ckanext-chat/%(version)s-chat.js
@@ -6,9 +12,3 @@ chat-js:
   extra:
     preload:
       - base/main
-
-chat-css:
-  filter: cssrewrite
-  output: ckanext-chat/%(version)s-chat.css
-  contents:
-    - style.css

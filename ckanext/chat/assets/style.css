@@ -1,42 +1,63 @@
 /* Add your own colors, sizes, etc. to match the screenshot */
-body {
-  display: flex;
-  height: 100vh;
-  margin: 0;
-  font-family: Arial, sans-serif;
-}
 
 #sidebar {
-  width: 250px;
+  width: 100%;
   background-color: #333;
   color: #fff;
   padding: 20px;
 }
 
+#chatList {
+  padding: 15px;
+  border-right: 1px solid #ddd;
+  height: 100vh;
+  background-color: #f8f9fa;
+}
+
+#chatList h5 {
+  margin-bottom: 15px;
+}
+
+#chatList .list-group-item {
+  cursor: pointer;
+  transition: background-color 0.3s;
+}
+
+#chatList .list-group-item:hover {
+  background-color: #e9ecef;
+}
+
+#chatList .list-group-item.active {
+  background-color: #007bff;
+  color: white;
+}
+
+#chatList .actions {
+  margin-top: 15px;
+}
+
+#chatList .btn-action {
+  width: 100%;
+  margin-top: 5px;
+}
+
 #main-content {
-  flex-grow: 1;
-  display: flex;
   flex-direction: column;
 }
 
 #main-header {
-  background-color: #555;
-  color: #fff;
-  padding: 10px;
   text-align: center;
 }
 
 #chatbox {
   flex-grow: 1;
   overflow-y: auto;
-  background-color: #f0f0f0;
   padding: 20px;
 }
 
 #chat-input {
   display: flex;
   padding: 10px;
-  background-color: #ddd;
 }
 
 #chat-input input[type=text] {
@@ -70,8 +91,13 @@ body {
   margin-right: 10px;
 }
 
+#userInput:focus {
+  border: none; /* Removes the border */
+  outline: none; /* Removes the outline if present */
+}
 .user-message .avatar {
-  background-color: gainsboro; /* Replace with the actual color */
+  background-color: rgba(var(--bs-primary-rgb)); /* Replace with the actual color */
+  color:var(--bs-body-bg);
 }
 
 .user-message .text {
@@ -82,7 +108,8 @@ body {
 }
 
 .bot-message .avatar {
-  background-color: green; /* Replace with the actual color */
+  background-color: rgba(var(--bs-secondary-rgb)); /* Replace with the actual color */
+  color:var(--bs-body-bg);
 }
 
 .bot-message .text {
@@ -102,19 +129,4 @@ body {
   border-radius: 4px;
   font-weight: bold;
   cursor: pointer;
-}
-
-#chat-sessions ul {
-  list-style-type: none;
-  padding: 0;
-  margin: 0;
-}
-
-#chat-sessions li {
-  padding: 10px;
-  border-bottom: 1px solid #ccc;
-}
-
-#chat-sessions li.active {
-  background-color: #f0f0f0;
 }
