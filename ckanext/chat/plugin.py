@@ -28,6 +28,7 @@ class ChatPlugin(plugins.SingletonPlugin):
         group = key.ckanext.chat
         declaration.declare_bool(group.ssl_verify, True)
         declaration.declare(group.completion_url, "https://your.chat.api")
+        declaration.declare(group.deployment, "gpt-4-vision-preview")
         declaration.declare(group.api_token, "")
 
     # IBlueprint

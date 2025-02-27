@@ -10,7 +10,7 @@ import black
 from flask import Flask, request, jsonify
 from groq import Groq
 import sys
-from ckanext.chat.bot.pritgpt import qagpt_response
+from ckanext.chat.bot.pritgpt import agent_response
 
 # Setting up logging
 logging.basicConfig(
@@ -77,7 +77,7 @@ class CodeAgent:
                 prompt += """
                 Lastly, make sure the response is in markdown format so that it is easy to display in the browser.
                 """
-            response = qagpt_response(
+            response = agent_reponse(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.90 if self.graph else 0.60,
                 type="ollama",
