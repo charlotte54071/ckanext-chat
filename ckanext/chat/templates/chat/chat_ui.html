@@ -1,6 +1,9 @@
 {% extends "page.html" %}
 {% import 'macros/form.html' as form %}
 
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>        
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+{% asset 'chat/chat-css' %}
 {% block subtitle %}{{ _("Chat") }}{% endblock %}
 
 {% block breadcrumb_content %}
@@ -10,11 +13,26 @@
 {% block primary_content %}
   <section class="module">
     <div class="module-content">
-      {% block page_primary_action %}
-      {% endblock %}
-      
-      {% block chat %}
-      {% endblock %}
+        {% block page_primary_action %}
+        {% endblock %}
+        
+        {% block chat %}
+        <section id="main-content">
+            <header id="main-header">
+                <!-- Header content remains the same -->
+                <h1>Ollama Chat</h1>
+            </header>
+            <div id="chatbox">
+                <!-- Chat messages will be dynamically inserted here -->
+            </div>
+            <footer id="chat-input">
+                <input type="text" id="userInput" placeholder="Type a message...">
+                <button onclick="sendMessage()">Send</button>
+                <input type="file" id="fileInput" style="display: none;">
+                <button onclick="$('#fileInput').click()">Upload</button>
+            </footer>
+        </section>
+        {% endblock %}
     </div>
 
     {% block page_pagination %}
@@ -25,5 +43,127 @@
 
 {% block secondary_content %}
     {% block form %}
+    <div class="col-3 sidebar bg-light">
+        <h5 class="p-3">Previous Chats</h5>
+        <ul id="chatList" class="list-group list-group-flush">
+          <!-- Previous chat list items will be injected here -->
+        </ul>
+    </div>
     {% endblock %}
+{% endblock %}
+
+<script>
+    // Load previous chats from localStorage
+    function loadPreviousChats() {
+      const chatListElement = document.getElementById('chatList');
+      chatListElement.innerHTML = '';
+      let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+      chats.forEach((chat, index) => {
+        let listItem = document.createElement('li');
+        listItem.className = 'list-group-item list-group-item-action';
+        listItem.textContent = chat.title || 'Chat ' + (index + 1);
+        listItem.onclick = function() {
+          loadChat(index);
+        };
+        chatListElement.appendChild(listItem);
+      });
+    }
+
+    // Load a specific chat session from localStorage into the message area
+    function loadChat(index) {
+      let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+      if(chats[index]) {
+        const chat = chats[index];
+        const messagesDiv = document.getElementById('messages');
+        messagesDiv.innerHTML = '';
+        chat.messages.forEach(msg => {
+          const msgDiv = document.createElement('div');
+          msgDiv.className = msg.sender === 'user' ? 'text-end my-2' : 'text-start my-2';
+          msgDiv.innerHTML = `<strong>${msg.sender}:</strong> ${msg.text}`;
+          messagesDiv.appendChild(msgDiv);
+        });
+      }
+    }
+
+    // Save a message to localStorage (assumes current chat is the last one; adapt as needed)
+    function saveMessage(sender, text) {
+      let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+      if(chats.length === 0) {
+        chats.push({ title: 'Chat 1', messages: [] });
+      }
+      let currentChat = chats[chats.length - 1];
+      currentChat.messages.push({ sender: sender, text: text });
+      localStorage.setItem('previousChats', JSON.stringify(chats));
+      loadPreviousChats();
+    }
+
+    function appendMessage(who, text) {
+        // Convert Markdown to HTML if the message is from the bot
+        if (who === 'bot') {
+            text = marked.parse(text);
+        }
+
+        var avatar = who === 'user' ? 'U' : 'C';
+        var messageClass = who === 'user' ? 'user-message' : 'bot-message';
+        $('#chatbox').append(`
+            <div class="message ${messageClass}">
+                <span class="avatar">${avatar}</span>
+                <div class="text">${text}</div>
+            </div>
+        `);
+        $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight); // Scroll to the bottom
+    }
+
+
+    function sendMessage() {
+        var text = $('#userInput').val();
+        $('#userInput').val(''); // Clear the input after sending
+        if (text.trim() !== '') {
+            appendMessage('user', text);
+            $.post('/ask', {text: text}, function(data) {
+                appendMessage('bot', data.response);
+            });
+        }
+    }
+
+    function sendFile() {
+        var file = $('#fileInput').prop('files')[0];
+        var formData = new FormData();
+        formData.append('file', file);
+
+        $.ajax({
+            url: '/upload',
+            type: 'POST',
+            data: formData,
+            contentType: false,
+            processData: false,
+            success: function(data) {
+                appendMessage('user', 'Uploaded a file');
+                appendMessage('bot', data.response);
+            }
+        });
+    }
+
+    // Trigger send message on enter
+    $('#userInput').on('keypress',function(e) {
+        if(e.which == 13) {
+            sendMessage();
+        }
+    });
+
+    // Load previous chats when the page loads
+    window.addEventListener('DOMContentLoaded', loadPreviousChats);
+
+    // Initialize LangChain UI if available (adjust initialization as needed)
+    if (window.LangChainUI) {
+      LangChainUI.init({
+        apiToken: "{{ token }}",
+        apiEndpoint: "{{ api_endpoint }}"
+      });
+    }
+  </script>
+
+{% block scripts %}
+{{ super()}}
+{% asset 'chat/chat-js' %}
 {% endblock %}
