@@ -3,14 +3,10 @@ import subprocess
 import traceback
 import datetime
 import py_compile
-import threading
 import logging
-import json
 import black
-from flask import Flask, request, jsonify
-from groq import Groq
 import sys
-from ckanext.chat.bot.pritgpt import agent_response
+from ckanext.chat.bot.agent import agent_response
 
 # Setting up logging
 logging.basicConfig(

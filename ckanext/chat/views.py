@@ -1,17 +1,17 @@
 from flask import Blueprint, request, jsonify, session
 from flask.views import MethodView
 
-from ckanext.chat.bot import pritgpt, prompt
+from ckanext.chat.bot import agent, prompt
 from ckanext.chat.bot.code_generator import CodeGenerator
-from ckanext.chat.bot.pritgpt import agent_response
+from ckanext.chat.bot.agent import agent_response
 
 from ckanext.chat.helpers import service_available
 from ckan.common import _, current_user
 import ckan.lib.helpers as core_helpers
 import ckan.lib.base as base
 import ckan.plugins.toolkit as toolkit
+import asyncio
 
-import datetime
 
 blueprint = Blueprint("chat", __name__)
 
@@ -42,14 +42,12 @@ class ChatView(MethodView):
         )
 
 
-import asyncio
-
-
 def ask():
-    user_input = request.form["text"]
-    response = asyncio.run(agent_response(user_input))
-    log.debug(response.data)
-    return jsonify({"response": response.data})
+    user_input = request.form.get("text")
+    history = request.form.get("history", "")
+    log.debug(history)
+    response = asyncio.run(agent_response(user_input, history))
+    return jsonify({"response": response.all_messages()})
 
 
 blueprint.add_url_rule(

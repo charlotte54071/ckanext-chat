@@ -9,28 +9,34 @@ ckan.module("chat-module", function ($, _) {
   };
 });
 
+
+let defaulChatLabel = "Current Chat"; // Initialize current chat label
+let currentChatLabel = defaulChatLabel;
+
 function handleKeyDown(event) {
   if (event.key === 'Enter' && event.shiftKey) {
-      // Add a line break manually
-      const textarea = event.target;
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
+    const textarea = event.target;
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
 
-      // Insert a new line at the cursor position
-      textarea.value = textarea.value.substring(0, start) + '\n' + textarea.value.substring(end);
-      // Move the cursor to the new position
-      textarea.selectionStart = textarea.selectionEnd = start + 1;
+    textarea.value = textarea.value.substring(0, start) + '\n' + textarea.value.substring(end);
+    textarea.selectionStart = textarea.selectionEnd = start + 1;
   } else if (event.key === 'Enter') {
-      // Prevent the default action (form submission or other actions)
-      event.preventDefault();
-      sendMessage(); // Call your function to send the message
+    event.preventDefault();
+    sendMessage();
   }
 }
-// Load previous chats from localStorage
+
 function loadPreviousChats() {
   const chatListElement = document.getElementById('chatList');
   chatListElement.innerHTML = '';
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  
+  if (chats.length === 0) {
+    chats.push({ title: currentChatLabel, messages: [] }); // Add default item
+    localStorage.setItem('previousChats', JSON.stringify(chats));
+  }
+
   chats.forEach((chat, index) => {
     let listItem = document.createElement('li');
     listItem.className = 'list-group-item list-group-item-action';
@@ -42,7 +48,6 @@ function loadPreviousChats() {
   });
 }
 
-// Load a specific chat session from localStorage into the message area
 function loadChat(index) {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
   if (chats[index]) {
@@ -50,62 +55,125 @@ function loadChat(index) {
     const messagesDiv = document.getElementById('chatbox');
     messagesDiv.innerHTML = '';
     chat.messages.forEach(msg => {
-      appendMessage(msg.sender, msg.text);
+      if (msg.kind === 'request') {
+        // Append user message
+        appendMessage('user', msg.parts);
+      } else if (msg.kind === 'response') {
+        // Append bot message
+        appendMessage('bot', msg.parts);
+      }
+    });
+
+    currentChatLabel = chat.title; // Update current chat label when loading a chat
+  }
+}
+
+function getChatHistory(label = currentChatLabel) {
+  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  return chats.find(chat => chat.title === label)?.messages || []; // Get messages based on label
+}
+
+function appendMessage(who, message) {
+  var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot';
+
+  // Check if message is an array of parts (from local storage)
+  if (Array.isArray(message)) {
+    message.forEach(part => {
+      $('#chatbox').append(`
+        <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
+          <span class="avatar"><i class="${iconClass}"></i></span>
+          <div class="text">${part.content}</div>
+        </div>
+      `);
+    });
+  } else if (typeof message === 'object' && message !== null && message.parts) {
+    // Check if message is an object with a parts array
+    message.parts.forEach(part => {
+      $('#chatbox').append(`
+        <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
+          <span class="avatar"><i class="${iconClass}"></i></span>
+          <div class="text">${part.content}</div>
+        </div>
+      `);
+    });
+  } else {
+    // If it's just a plain string or non-parted message, append it directly
+    $('#chatbox').append(`
+      <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
+        <span class="avatar"><i class="${iconClass}"></i></span>
+        <div class="text">${message}</div>
+      </div>
+    `);
+  }
+
+  $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight); // Scroll to the bottom
+}
+function getLastEntryText(array) {
+  const lastEntry = array[array.length - 1];
+  if (lastEntry && lastEntry.parts && lastEntry.parts.length > 0) {
+    const str=lastEntry.parts[lastEntry.parts.length - 1].content;
+    return str.replace(/^"|"$/g, '').trim();
+  }
+  return null; // Return null if there is no valid entry
+}
+
+function sendMessage() {
+  var text = $('#userInput').val();
+  $('#userInput').val('');
+
+  if (text.trim() !== '') {
+    appendMessage('user', text);
+    const chatHistory = getChatHistory(currentChatLabel);
+
+    // If this is the first message, retitle the current chat
+    if (chatHistory.length === 0) {
+      currentChatLabel = "Current Chat"; 
+    }
+
+    $.post('chat/ask', { text: "Provide only a 3-word title for this question: " + text }, function(data) {
+      const label = getLastEntryText(data.response);
+      if (chatHistory.length === 0) {
+        // Update the chat title in local storage
+        updateChatTitle(currentChatLabel, label);
+        currentChatLabel=label;
+      }
+      sendBotMessage(text, currentChatLabel); // Send message to the bot with the current chat label
     });
   }
 }
 
-function appendMessage(who, text) {
-  var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot'; // Use Font Awesome classes for user and bot
+function updateChatTitle(oldLabel, newLabel) {
+  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  let chatIndex = chats.findIndex(chat => chat.title === oldLabel);
 
-  $('#chatbox').append(`
-      <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
-          <span class="avatar"><i class="${iconClass}"></i></span>
-          <div class="text">${text}</div>
-      </div>
-  `);
-  $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight); // Scroll to the bottom
-}
-var chatLabel = ""; // Flag to track if a label has been received from the chatbot
-
-function sendMessage() {
-  var text = $('#userInput').val();
-  $('#userInput').val(''); // Clear the input after sending
-
-  if (text.trim() !== '') {
-    appendMessage('user', text);
-    
-    if (!chatLabel) {
-      $.post('chat/ask', { text: "Provide only a 3-word title for this question: " + text }, function(data) {
-        chatLabel = data.response.replace(/^"|"$/g, ''); // Store the label
-        saveMessage('user', text, chatLabel); // Save the user message with the label
-        sendBotMessage(text); // Send message to the bot
-      });
-    } else {
-      saveMessage('user', text); // Save the user message with the existing label
-      sendBotMessage(text); // Send message to the bot
-    }
+  if (chatIndex !== -1) {
+    chats[chatIndex].title = newLabel; // Update the title
+    localStorage.setItem('previousChats', JSON.stringify(chats));
+    loadPreviousChats();
   }
 }
 
-function sendBotMessage(text) {
-  $.post('chat/ask', { text: text }, function(data) {
-    appendMessage('bot', data.response);
-    saveMessage('bot', data.response); // Save the bot's response with the label
+function sendBotMessage(text, label) {
+  const history = getChatHistory(label); // Load history based on the current label
+  $.post('chat/ask', { text: text, history: JSON.stringify(history) }, function(data) {
+    saveChat(data.response, label);
+    appendMessage('bot', data.response[data.response.length - 1]);
   });
 }
 
-// Update saveMessage function to ensure it handles labels correctly
-function saveMessage(sender, text, label) {
-    let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-    if (chats.length === 0 || (label && label.trim() !== '')) {
-        // If a new label is provided, create a new chat with that label
-        chats.push({ title: label || 'Chat ' + (chats.length + 1), messages: [] });
-    }
-    let currentChat = chats[chats.length - 1];
-    currentChat.messages.push({ sender: sender, text: text });
-    localStorage.setItem('previousChats', JSON.stringify(chats));
-    loadPreviousChats();
+function saveChat(chat_messages, label) {
+  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  
+  let existingChatIndex = chats.findIndex(chat => chat.title === label);
+  
+  if (existingChatIndex === -1) {
+    chats.push({ title: label, messages: [] });
+  }
+
+  let currentChat = chats[existingChatIndex === -1 ? chats.length - 1 : existingChatIndex];
+  currentChat.messages = currentChat.messages.concat(chat_messages);
+  
+  localStorage.setItem('previousChats', JSON.stringify(chats));
 }
 
 function sendFile() {
@@ -114,34 +182,57 @@ function sendFile() {
   formData.append('file', file);
 
   $.ajax({
-      url: '/upload',
-      type: 'POST',
-      data: formData,
-      contentType: false,
-      processData: false,
-      success: function(data) {
-          appendMessage('user', 'Uploaded a file');
-          appendMessage('bot', data.response);
-      }
+    url: '/upload',
+    type: 'POST',
+    data: formData,
+    contentType: false,
+    processData: false,
+    success: function(data) {
+      appendMessage('user', 'Uploaded a file');
+      appendMessage('bot', data.response);
+    }
   });
 }
+
 document.getElementById('deleteChatButton').onclick = function() {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  if (chats.length > 0) {
-      chats.pop(); // Remove the last chat
+  
+  // Find the index of the chat with the current label
+  const currentLabel = currentChatLabel; // Assuming currentChatLabel holds the label of the current chat
+  const chatIndex = chats.findIndex(chat => chat.title === currentLabel);
+  
+  if (chatIndex !== -1) {
+      // Remove the chat with the current label
+      chats.splice(chatIndex, 1);
       localStorage.setItem('previousChats', JSON.stringify(chats));
-      loadPreviousChats(); // Refresh the chat list
-      // Optionally clear the chat area
+      loadPreviousChats();
       document.getElementById('chatbox').innerHTML = '';
+      currentChatLabel = defaulChatLabel; // Reset the current chat label if needed
   }
 };
-
 document.getElementById('newChatButton').onclick = function() {
+  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  
+  // Create a new empty chat with a default name
+  chats.push({ title: defaulChatLabel, messages: [] }); // Create an empty chat
+
+  localStorage.setItem('previousChats', JSON.stringify(chats)); // Save to local storage
+  
   // Clear the chat area for a new chat
   document.getElementById('chatbox').innerHTML = '';
-  $('#userInput').val(''); // Clear input
-  labelSet = false; // Reset label received flag
-};
-// Load previous chats when the page loads
-window.addEventListener('DOMContentLoaded', loadPreviousChats);
+  $('#userInput').val('');
+  currentChatLabel = defaulChatLabel; // Set current chat label to the new chat's name
 
+  loadPreviousChats(); // Refresh the chat list in the UI
+};
+window.addEventListener('load', function() {
+  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
+  
+  // Add the current chat only on the first load
+  if (!chats.some(chat => chat.title === currentChatLabel)) {
+    chats.push({ title: currentChatLabel, messages: [] });
+    localStorage.setItem('previousChats', JSON.stringify(chats));
+  }
+  
+  loadPreviousChats(); // Load previous chats after ensuring the current chat is added
+});
