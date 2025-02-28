@@ -1,17 +1,19 @@
-from flask import Blueprint, request, jsonify, session
+import asyncio
+import json
+from datetime import datetime
+
+import ckan.lib.base as base
+import ckan.lib.helpers as core_helpers
+import ckan.plugins.toolkit as toolkit
+from ckan.common import _, current_user
+from flask import Blueprint, Response, jsonify, request
 from flask.views import MethodView
+from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from ckanext.chat.bot import agent, prompt
-from ckanext.chat.bot.code_generator import CodeGenerator
 from ckanext.chat.bot.agent import agent_response
-
+from ckanext.chat.bot.code_generator import CodeGenerator
 from ckanext.chat.helpers import service_available
-from ckan.common import _, current_user
-import ckan.lib.helpers as core_helpers
-import ckan.lib.base as base
-import ckan.plugins.toolkit as toolkit
-import asyncio
-
 
 blueprint = Blueprint("chat", __name__)
 
@@ -46,8 +48,27 @@ def ask():
     user_input = request.form.get("text")
     history = request.form.get("history", "")
     log.debug(history)
-    response = asyncio.run(agent_response(user_input, history))
-    return jsonify({"response": response.all_messages()})
+
+    max_retries = 3
+    attempt = 0
+
+    while attempt < max_retries:
+        try:
+            response = asyncio.run(agent_response(user_input, history))
+            return jsonify({"response": response.all_messages()})
+        except UnexpectedModelBehavior as e:
+            log.error(f"Attempt {attempt + 1}: {e}")
+            attempt += 1
+
+    # Inform the user if all retries fail
+    return (
+        jsonify(
+            {
+                "error": "Failed to get a valid response from the AI model after multiple attempts."
+            }
+        ),
+        500,
+    )
 
 
 blueprint.add_url_rule(

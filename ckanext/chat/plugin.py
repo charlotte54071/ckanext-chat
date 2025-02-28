@@ -2,7 +2,7 @@ import ckan.plugins as plugins
 import ckan.plugins.toolkit as toolkit
 from ckan.config.declaration import Declaration, Key
 
-from ckanext.chat import auth, helpers, views, action
+from ckanext.chat import action, auth, helpers, views
 
 
 class ChatPlugin(plugins.SingletonPlugin):

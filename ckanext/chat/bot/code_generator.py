@@ -1,11 +1,13 @@
-import os
-import subprocess
-import traceback
 import datetime
-import py_compile
 import logging
-import black
+import os
+import py_compile
+import subprocess
 import sys
+import traceback
+
+import black
+
 from ckanext.chat.bot.agent import agent_response
 
 # Setting up logging

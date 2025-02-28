@@ -1,7 +1,7 @@
+from typing import Any
+
 import ckan.plugins as p
 import ckan.plugins.toolkit as toolkit
-
-from typing import Any
 
 if toolkit.check_ckan_version("2.10"):
     from ckan.types import Context

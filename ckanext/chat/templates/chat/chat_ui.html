@@ -57,11 +57,11 @@
                 </a>
                 {% endblock %}
             </div>
-            <div class="d-flex gap-2">
-                <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage()">
-                    <i class="fa fa-paper-plane"></i>
-                </a>
-            </div>
+            <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage(this)">
+              <i class="fa fa-paper-plane"></i>
+              <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+              <span class="button-text">Send</span>
+            </a>
         </div>
     </div>
     </section>

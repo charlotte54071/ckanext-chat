@@ -26,7 +26,24 @@ function handleKeyDown(event) {
     sendMessage();
   }
 }
+// Function to convert timestamps to ISO format
+function convertTimestampsToISO(data) {
+  if (Array.isArray(data)) {
+      return data.map(item => convertTimestampsToISO(item));
+  } else if (typeof data === 'object' && data !== null) {
+      return Object.keys(data).reduce((acc, key) => {
+          acc[key] = convertTimestampsToISO(data[key]);
 
+          // Check if the value is a timestamp string and convert it to ISO if necessary
+          if (key === 'timestamp' && typeof acc[key] === 'string') {
+              acc[key] = new Date(acc[key]).toISOString(); // Convert to ISO format
+          }
+
+          return acc;
+      }, {});
+  }
+  return data; // Return other types unchanged
+}
 function loadPreviousChats() {
   const chatListElement = document.getElementById('chatList');
   chatListElement.innerHTML = '';
@@ -70,7 +87,9 @@ function loadChat(index) {
 
 function getChatHistory(label = currentChatLabel) {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  return chats.find(chat => chat.title === label)?.messages || []; // Get messages based on label
+  const storedData=chats.find(chat => chat.title === label)?.messages || [];
+  const convertedData = convertTimestampsToISO(storedData);
+  return convertedData; // Get messages based on label
 }
 
 function appendMessage(who, message) {
@@ -122,23 +141,47 @@ function sendMessage() {
   $('#userInput').val('');
 
   if (text.trim() !== '') {
-    appendMessage('user', text);
-    const chatHistory = getChatHistory(currentChatLabel);
+      appendMessage('user', text);
+      const chatHistory = getChatHistory(currentChatLabel);
 
-    // If this is the first message, retitle the current chat
-    if (chatHistory.length === 0) {
-      currentChatLabel = "Current Chat"; 
-    }
-
-    $.post('chat/ask', { text: "Provide only a 3-word title for this question: " + text }, function(data) {
-      const label = getLastEntryText(data.response);
+      // If this is the first message, retitle the current chat
       if (chatHistory.length === 0) {
-        // Update the chat title in local storage
-        updateChatTitle(currentChatLabel, label);
-        currentChatLabel=label;
+          currentChatLabel = "Current Chat";
       }
-      sendBotMessage(text, currentChatLabel); // Send message to the bot with the current chat label
-    });
+
+      // Reference to the send button and its elements
+      var sendButton = $('#sendButton');
+      var spinner = sendButton.find('.spinner-border');
+      var buttonText = sendButton.find('.button-text');
+      var icon = sendButton.find('.fa-paper-plane');
+
+      // Disable the button and show the spinner
+      sendButton.prop('disabled', true);
+      spinner.removeClass('d-none');
+      buttonText.addClass('d-none');
+      icon.addClass('d-none');
+
+      $.post('chat/ask', { text: "Provide only a 3-word title for this question: " + text })
+          .done(function(data) {
+              const label = getLastEntryText(data.response);
+              if (chatHistory.length === 0) {
+                  // Update the chat title in local storage
+                  updateChatTitle(currentChatLabel, label);
+                  currentChatLabel = label;
+              }
+              sendBotMessage(text, currentChatLabel); // Send message to the bot with the current chat label
+          })
+          .fail(function() {
+              // Handle errors here
+              alert('An error occurred while processing your request.');
+          })
+          .always(function() {
+              // Re-enable the button and hide the spinner
+              spinner.addClass('d-none');
+              buttonText.removeClass('d-none');
+              icon.removeClass('d-none');
+              sendButton.prop('disabled', false);
+          });
   }
 }
 

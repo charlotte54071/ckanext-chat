@@ -1,15 +1,12 @@
 # from dotenv import load_dotenv
-import ckan.plugins.toolkit as toolkit
-
-from openai import AsyncAzureOpenAI
-
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.messages import ModelMessagesTypeAdapter
-from typing import List
-from typing import List
 import json
-from datetime import datetime
+from typing import List
+
+import ckan.plugins.toolkit as toolkit
+from openai import AsyncAzureOpenAI
+from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.models.openai import OpenAIModel
 
 log = __import__("logging").getLogger(__name__)
 
@@ -24,35 +21,10 @@ model = OpenAIModel(deployment, openai_client=client)
 agent = Agent(model)
 
 
-def convert_timestamp(rfc2822_str):
-    try:
-        # Parse the RFC 2822 formatted string
-        dt = datetime.strptime(rfc2822_str, "%a, %d %b %Y %H:%M:%S %Z")
-        # Return the ISO 8601 formatted string
-        return dt.isoformat()
-    except ValueError as e:
-        print(f"Error parsing date: {rfc2822_str} - {e}")
-        return rfc2822_str  # Return the original string if parsing fails
-
-
-def update_timestamps(data):
-    if isinstance(data, dict):
-        for key, value in data.items():
-            if key == "timestamp" and isinstance(value, str):
-                data[key] = convert_timestamp(value)
-            else:
-                update_timestamps(value)
-    elif isinstance(data, list):
-        for item in data:
-            update_timestamps(item)
-
-
 def convert_to_model_messages(history: str) -> List:
     model_messages = None
     if history:
         history_list = json.loads(history)
-        # reformat dates
-        update_timestamps(history_list)
         model_messages = ModelMessagesTypeAdapter.validate_python(history_list)
     return model_messages
 
