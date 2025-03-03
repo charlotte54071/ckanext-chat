@@ -7,6 +7,9 @@ from openai import AsyncAzureOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessagesTypeAdapter
 from pydantic_ai.models.openai import OpenAIModel
+import nest_asyncio
+
+nest_asyncio.apply()
 
 log = __import__("logging").getLogger(__name__)
 
@@ -29,11 +32,11 @@ def convert_to_model_messages(history: str) -> List:
     return model_messages
 
 
-async def agent_response(prompt, history: str):
+def agent_response(prompt, history: str):
     """
     Synchronously run the agent on the provided list of messages.
     The messages should be a list of dicts with keys 'role' and 'content'.
     """
     msg_history = convert_to_model_messages(history)
-    result = await agent.run(user_prompt=prompt, message_history=msg_history)
+    result = agent.run_sync(user_prompt=prompt, message_history=msg_history)
     return result

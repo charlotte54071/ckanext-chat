@@ -109,7 +109,7 @@
   background-color:var(--lt-color-gray-300);
   padding: 10px;
   border-radius: 10px;
-  max-width: 80%;
+  max-width: 90%;
 }
 
 .bot-message .avatar {
@@ -121,17 +121,24 @@
   background-color: var(--lt-color-gray-500); /* Slightly darker */
   padding: 10px;
   border-radius: 10px;
-  max-width: 80%;
+  max-width: 90%;
 }
 
-#new-chat {
-  display: block;
-  margin: 10px;
-  padding: 10px;
-  background-color: #1a73e8;
-  color: white;
+/* Style for code blocks */
+pre {
+  border-radius: 5px;
+  overflow: auto;
+  position: relative;
+}
+.copy-button {
+  background: transparent;
   border: none;
-  border-radius: 4px;
-  font-weight: bold;
+  color: var(--bs-body-color);
   cursor: pointer;
+  font-size: 16px;
+  opacity: 0.8;
+  transition: opacity 0.2s ease;
+}
+.copy-button:hover {
+  opacity: 1;
 }

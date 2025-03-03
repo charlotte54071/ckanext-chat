@@ -1,3 +1,5 @@
 pydantic-ai-slim[openai,logfire]==0.0.28
 openai
 black
+logfire[httpx]
+nest_asyncio

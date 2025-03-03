@@ -54,7 +54,7 @@ def ask():
 
     while attempt < max_retries:
         try:
-            response = asyncio.run(agent_response(user_input, history))
+            response = agent_response(user_input, history)
             return jsonify({"response": response.all_messages()})
         except UnexpectedModelBehavior as e:
             log.error(f"Attempt {attempt + 1}: {e}")

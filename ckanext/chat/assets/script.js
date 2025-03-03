@@ -9,6 +9,24 @@ ckan.module("chat-module", function ($, _) {
   };
 });
 
+marked.setOptions({
+  highlight: function(code, lang) {
+    return hljs.highlight(code,{ language: lang }).value;;
+  }
+});
+
+
+function renderMarkdown(content) {
+  // Parse the markdown to HTML
+  const rawHtml = marked.parse(content);
+
+  // Sanitize the HTML using DOMPurify
+  const cleanHtml = DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
+    ALLOWED_ATTR: ['class', 'href']
+  });
+  return cleanHtml;
+}
 
 let defaulChatLabel = "Current Chat"; // Initialize current chat label
 let currentChatLabel = defaulChatLabel;
@@ -95,38 +113,78 @@ function getChatHistory(label = currentChatLabel) {
 function appendMessage(who, message) {
   var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot';
 
-  // Check if message is an array of parts (from local storage)
   if (Array.isArray(message)) {
     message.forEach(part => {
       $('#chatbox').append(`
         <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
           <span class="avatar"><i class="${iconClass}"></i></span>
-          <div class="text">${part.content}</div>
+          <div class="text">${renderMarkdown(part.content)}</div>
         </div>
       `);
     });
   } else if (typeof message === 'object' && message !== null && message.parts) {
-    // Check if message is an object with a parts array
     message.parts.forEach(part => {
       $('#chatbox').append(`
         <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
           <span class="avatar"><i class="${iconClass}"></i></span>
-          <div class="text">${part.content}</div>
+          <div class="text">${renderMarkdown(part.content)}</div>
         </div>
       `);
     });
   } else {
-    // If it's just a plain string or non-parted message, append it directly
     $('#chatbox').append(`
       <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
         <span class="avatar"><i class="${iconClass}"></i></span>
-        <div class="text">${message}</div>
+        <div class="text">${renderMarkdown(message)}</div>
       </div>
     `);
   }
 
-  $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight); // Scroll to the bottom
+  document.querySelectorAll('pre code').forEach((block) => {
+    if (!block.hasAttribute('data-highlighted')) {
+      hljs.highlightElement(block);
+      block.setAttribute('data-highlighted', 'true');
+    }
+  });
+  addCopyButtonsToCodeBlocks();
+  
+  $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight);
 }
+
+function addCopyButtonsToCodeBlocks() {
+  document.querySelectorAll('pre code').forEach((codeBlock) => {
+    // Check if a button is already added
+    if (codeBlock.parentElement.querySelector('.copy-button')) return;
+
+    // Create the copy button with FontAwesome icon
+    const copyButton = document.createElement('button');
+    copyButton.className = 'copy-button';
+    copyButton.innerHTML = '<i class="fas fa-copy"></i>';
+
+    // Copy code block content when clicked
+    copyButton.addEventListener('click', () => {
+      navigator.clipboard.writeText(codeBlock.innerText).then(() => {
+        // Change icon to indicate success
+        copyButton.innerHTML = '<i class="fas fa-check"></i>';
+        setTimeout(() => {
+          copyButton.innerHTML = '<i class="fas fa-copy"></i>';
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy: ', err);
+      });
+    });
+
+    // Ensure the pre element is positioned relatively so the button can be positioned absolutely
+    const preElement = codeBlock.parentElement;
+    preElement.style.position = 'relative';
+    copyButton.style.position = 'absolute';
+    copyButton.style.top = '5px';
+    copyButton.style.right = '5px';
+
+    preElement.appendChild(copyButton);
+  });
+}
+
 function getLastEntryText(array) {
   const lastEntry = array[array.length - 1];
   if (lastEntry && lastEntry.parts && lastEntry.parts.length > 0) {
