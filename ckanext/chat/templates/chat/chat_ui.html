@@ -44,18 +44,17 @@
             <div class="d-flex gap-2">
                 <!-- Jinja2 block for upload file, search and reason toggle buttons -->
                 {% block action_buttons %}
-                <div class="position-relative">
-                    <input type="file" id="fileInput" class="d-none">
-                    <a class="btn btn-outline-secondary" onclick="$('#fileInput').click()">
-                        <i class="fa fa-plus"></i>
-                    </a>
-                </div>
-                <a class="btn btn-outline-info" href="#" aria-label="Search" id="searchButton">
+                <input type="file" id="fileInput" class="d-none">
+                <a class="btn btn-outline-secondary" aria-label="File" id="fileInput" onclick="$('#fileInput').click()">
+                  <input type="file" id="fileInput" class="d-none">
+                  <i class="fa fa-plus"></i>
+                </a>
+                <!-- <a class="btn btn-outline-info" href="#" aria-label="Search" id="searchButton">
                     <i class="fa fa-search"></i>
-                </a>
-                <a class="btn btn-outline-warning" href="#" aria-label="Reason" id="reasonButton">
+                </a> -->
+                <!-- <a class="btn btn-outline-warning" href="#" aria-label="Reason" id="reasonButton">
                     <i class="fa fa-question-circle"></i>
-                </a>
+                </a> -->
                 {% endblock %}
             </div>
             <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage(this)">
