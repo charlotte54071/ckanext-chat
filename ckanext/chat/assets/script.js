@@ -113,32 +113,21 @@ function getChatHistory(label = currentChatLabel) {
 function appendMessage(who, message) {
   var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot';
 
-  if (Array.isArray(message)) {
-    message.forEach(part => {
-      $('#chatbox').append(`
-        <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
-          <span class="avatar"><i class="${iconClass}"></i></span>
-          <div class="text">${renderMarkdown(part.content)}</div>
-        </div>
-      `);
-    });
-  } else if (typeof message === 'object' && message !== null && message.parts) {
-    message.parts.forEach(part => {
-      $('#chatbox').append(`
-        <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
-          <span class="avatar"><i class="${iconClass}"></i></span>
-          <div class="text">${renderMarkdown(part.content)}</div>
-        </div>
-      `);
-    });
-  } else {
+  // Ensure message is an array for consistent processing
+  if (!Array.isArray(message)) {
+    message = [{ content: message }];
+  }
+
+  message.forEach(part => {
     $('#chatbox').append(`
       <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
-        <span class="avatar"><i class="${iconClass}"></i></span>
-        <div class="text">${renderMarkdown(message)}</div>
+        <span class="col-2 avatar"><i class="${iconClass}"></i></span>
+        <div class="col-auto text">
+          ${renderMarkdown(part.content)}
+        </div>
       </div>
     `);
-  }
+  });
 
   document.querySelectorAll('pre code').forEach((block) => {
     if (!block.hasAttribute('data-highlighted')) {
@@ -258,7 +247,7 @@ function sendBotMessage(text, label) {
   const history = getChatHistory(label); // Load history based on the current label
   $.post('chat/ask', { text: text, history: JSON.stringify(history) }, function(data) {
     saveChat(data.response, label);
-    appendMessage('bot', data.response[data.response.length - 1]);
+    appendMessage('bot', data.response[data.response.length - 1].parts);
   });
 }
 
