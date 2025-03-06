@@ -1,10 +1,10 @@
 import ckan.plugins as plugins
 import ckan.plugins.toolkit as toolkit
 from ckan.config.declaration import Declaration, Key
-
 from ckanext.chat import action, auth, helpers, views
+from ckan.types import Schema
 
-
+from flask import has_request_context,current_app
 class ChatPlugin(plugins.SingletonPlugin):
     plugins.implements(plugins.IConfigurer)
     plugins.implements(plugins.IConfigDeclaration)
@@ -12,6 +12,7 @@ class ChatPlugin(plugins.SingletonPlugin):
     plugins.implements(plugins.ITemplateHelpers)
     plugins.implements(plugins.IAuthFunctions)
     plugins.implements(plugins.IActions)
+    #plugins.implements(plugins.IConfigurable)
 
     # IConfigurer
 
@@ -30,7 +31,9 @@ class ChatPlugin(plugins.SingletonPlugin):
         declaration.declare(group.completion_url, "https://your.chat.api")
         declaration.declare(group.deployment, "gpt-4-vision-preview")
         declaration.declare(group.api_token, "")
+        log = __import__("logging").getLogger(__name__)
 
+    
     # IBlueprint
 
     def get_blueprint(self):

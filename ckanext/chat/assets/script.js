@@ -17,14 +17,28 @@ marked.setOptions({
 
 
 function renderMarkdown(content) {
+  console.log(content);
   // Parse the markdown to HTML
-  const rawHtml = marked.parse(content);
+  var cleanHtml = "";
+  
+  if (Array.isArray(content)) {
+    // If content is an array, process each item
+    cleanHtml = content.map(item => {
+      const rawHtml = marked.parse(item);
+      return DOMPurify.sanitize(rawHtml, {
+        ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
+        ALLOWED_ATTR: ['class', 'href']
+      });
+    }).join(""); // Join the array of HTML strings
+  } else if (content) {
+    // If content is a single string, process it
+    const rawHtml = marked.parse(content);
+    cleanHtml = DOMPurify.sanitize(rawHtml, {
+      ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
+      ALLOWED_ATTR: ['class', 'href']
+    });
+  }
 
-  // Sanitize the HTML using DOMPurify
-  const cleanHtml = DOMPurify.sanitize(rawHtml, {
-    ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
-    ALLOWED_ATTR: ['class', 'href']
-  });
   return cleanHtml;
 }
 
@@ -202,7 +216,7 @@ function sendMessage() {
       var buttonText = sendButton.find('.button-text');
       var icon = sendButton.find('.fa-paper-plane');
 
-      // Disable the button and show the spinner
+      // Show the spinner and disable the button
       sendButton.prop('disabled', true);
       spinner.removeClass('d-none');
       buttonText.addClass('d-none');
@@ -216,14 +230,18 @@ function sendMessage() {
                   updateChatTitle(currentChatLabel, label);
                   currentChatLabel = label;
               }
-              sendBotMessage(text, currentChatLabel); // Send message to the bot with the current chat label
+              sendBotMessage(text, currentChatLabel, function() {
+                // This is the callback to hide the spinner
+                spinner.addClass('d-none');
+                buttonText.removeClass('d-none');
+                icon.removeClass('d-none');
+                sendButton.prop('disabled', false);
+            });
+              
           })
           .fail(function() {
               // Handle errors here
               alert('An error occurred while processing your request.');
-          })
-          .always(function() {
-              // Re-enable the button and hide the spinner
               spinner.addClass('d-none');
               buttonText.removeClass('d-none');
               icon.removeClass('d-none');
@@ -243,11 +261,12 @@ function updateChatTitle(oldLabel, newLabel) {
   }
 }
 
-function sendBotMessage(text, label) {
-  const history = getChatHistory(label); // Load history based on the current label
+function sendBotMessage(text, label, callback) {
+  const history = getChatHistory(label);
   $.post('chat/ask', { text: text, history: JSON.stringify(history) }, function(data) {
     saveChat(data.response, label);
     appendMessage('bot', data.response[data.response.length - 1].parts);
+    if (callback) callback(); // Call the callback function to hide the spinner
   });
 }
 

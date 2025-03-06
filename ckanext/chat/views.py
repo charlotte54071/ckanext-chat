@@ -6,20 +6,27 @@ import ckan.lib.base as base
 import ckan.lib.helpers as core_helpers
 import ckan.plugins.toolkit as toolkit
 from ckan.common import _, current_user
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Response, jsonify, request, current_app
 from flask.views import MethodView
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
 from ckanext.chat.bot import agent, prompt
-from ckanext.chat.bot.agent import agent_response
+from ckanext.chat.bot.agent import agent_response, get_ckan_url_patterns
 from ckanext.chat.bot.code_generator import CodeGenerator
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
 
 log = __import__("logging").getLogger(__name__)
+global_ckan_app = None
 
-
+@blueprint.before_request
+def capture_global_app():
+    # This hook is executed in an active application context.
+    global global_ckan_app
+    if global_ckan_app is None:
+        # Capture the global CKAN app from the current request's context
+        global_ckan_app = current_app._get_current_object()
 class ChatView(MethodView):
     def post(self):
         return core_helpers.redirect_to(
@@ -33,7 +40,7 @@ class ChatView(MethodView):
             # flask types do not mention that it's possible to return a response
             # from the `before_request` callback
             return core_helpers.redirect_to("user.login")
-
+        #log.debug(get_ckan_url_patterns())
         return base.render(
             "chat/chat_ui.html",
             extra_vars={
@@ -56,9 +63,10 @@ def ask():
         try:
             response = agent_response(user_input, history)
             return jsonify({"response": response.all_messages()})
-        except UnexpectedModelBehavior as e:
+        except Exception as e:
             log.error(f"Attempt {attempt + 1}: {e}")
             attempt += 1
+            
 
     # Inform the user if all retries fail
     return (
