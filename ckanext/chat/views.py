@@ -1,6 +1,4 @@
-import asyncio
-import json
-from datetime import datetime
+
 
 import ckan.lib.base as base
 import ckan.lib.helpers as core_helpers
@@ -10,10 +8,17 @@ from flask import Blueprint, Response, jsonify, request, current_app
 from flask.views import MethodView
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
-from ckanext.chat.bot import agent, prompt
 from ckanext.chat.bot.agent import agent_response, get_ckan_url_patterns
 from ckanext.chat.bot.code_generator import CodeGenerator
 from ckanext.chat.helpers import service_available
+
+from flask import request, jsonify, flash
+import logging
+from pydantic_ai.exceptions import (
+    UsageLimitExceeded, ModelRetry, UnexpectedModelBehavior,
+    AgentRunError, ModelHTTPError, FallbackExceptionGroup
+)
+
 
 blueprint = Blueprint("chat", __name__)
 
@@ -54,30 +59,28 @@ class ChatView(MethodView):
 def ask():
     user_input = request.form.get("text")
     history = request.form.get("history", "")
-    log.debug(history)
-
     max_retries = 3
     attempt = 0
 
     while attempt < max_retries:
         try:
             response = agent_response(user_input, history)
-            return jsonify({"response": response.all_messages()})
-        except Exception as e:
+            # Now response is guaranteed to have new_messages() if no exception occurred.
+            return jsonify({"response": response.new_messages()})
+        except (UsageLimitExceeded, ModelRetry, UnexpectedModelBehavior,
+                AgentRunError, ModelHTTPError, FallbackExceptionGroup) as e:
+            flash(f"Error: {str(e)}", "danger")
             log.error(f"Attempt {attempt + 1}: {e}")
             attempt += 1
-            
+        except Exception as e:
+            # Generic catch-all to ensure we don't try to call new_messages on an error object.
+            flash(f"Error: {str(e)}", "danger")
+            log.error(f"Attempt {attempt + 1}: {e}")
+            attempt += 1
 
-    # Inform the user if all retries fail
-    return (
-        jsonify(
-            {
-                "error": "Failed to get a valid response from the AI model after multiple attempts."
-            }
-        ),
-        500,
-    )
-
+    # If all attempts fail, flash an error message and return an error response
+    flash("Failed to get a valid response from the AI model after multiple attempts.", "danger")
+    return jsonify({"error": "Failed to get a valid response. Please try regenerating."}), 500
 
 blueprint.add_url_rule(
     "/chat",

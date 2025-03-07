@@ -117,12 +117,13 @@ function loadChat(index) {
   }
 }
 
+// Updated chat history retrieval function (now returns new_messages format)
 function getChatHistory(label = currentChatLabel) {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  const storedData=chats.find(chat => chat.title === label)?.messages || [];
-  const convertedData = convertTimestampsToISO(storedData);
-  return convertedData; // Get messages based on label
+  const storedData = chats.find(chat => chat.title === label)?.messages || [];
+  return convertTimestampsToISO(storedData);
 }
+
 
 function appendMessage(who, message) {
   var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot';
@@ -270,21 +271,37 @@ function sendBotMessage(text, label, callback) {
   });
 }
 
-function saveChat(chat_messages, label) {
+// Updated function to save new messages into chat history
+function saveChat(newMessages, label) {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  
   let existingChatIndex = chats.findIndex(chat => chat.title === label);
   
   if (existingChatIndex === -1) {
     chats.push({ title: label, messages: [] });
+    existingChatIndex = chats.length - 1;
   }
-
-  let currentChat = chats[existingChatIndex === -1 ? chats.length - 1 : existingChatIndex];
-  currentChat.messages = currentChat.messages.concat(chat_messages);
+  
+  // Append newMessages (expected to be an array) to the existing chat messages
+  chats[existingChatIndex].messages = chats[existingChatIndex].messages.concat(newMessages);
   
   localStorage.setItem('previousChats', JSON.stringify(chats));
 }
 
+// New function to regenerate a failed question
+function regenerateFailedMessage() {
+  // Optionally, retrieve the last user message from the input field or a stored variable
+  let lastUserInput = $('#userInput').val();
+  if (lastUserInput.trim() === '') {
+      alert("No message to regenerate.");
+      return;
+  }
+  
+  // Clear any previous flash messages
+  $('.flash-messages').empty();
+  
+  // Re-run the sendMessage function to resend the message
+  sendMessage();
+}
 function sendFile() {
   var file = $('#fileInput').prop('files')[0];
   var formData = new FormData();
@@ -333,6 +350,9 @@ document.getElementById('newChatButton').onclick = function() {
   currentChatLabel = defaulChatLabel; // Set current chat label to the new chat's name
 
   loadPreviousChats(); // Refresh the chat list in the UI
+};
+document.getElementById('regenerateButton').onclick = function() {
+  regenerateFailedMessage();
 };
 window.addEventListener('load', function() {
   let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
