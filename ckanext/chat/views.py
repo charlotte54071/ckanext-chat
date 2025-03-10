@@ -12,7 +12,6 @@ from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
                                     UsageLimitExceeded)
 
 from ckanext.chat.bot.agent import agent_response
-from ckanext.chat.bot.code_generator import CodeGenerator
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
