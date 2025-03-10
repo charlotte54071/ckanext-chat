@@ -1,0 +1,8 @@
+{% ckan_extends %}
+
+{% set chat_route = 'chat.chat' %}
+
+{% block header_site_navigation_tabs %}
+  {{ super() }}
+  {{ h.build_nav_main((chat_route, _('Chat'))) }}
+{% endblock %}

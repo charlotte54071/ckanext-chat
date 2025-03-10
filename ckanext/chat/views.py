@@ -62,6 +62,10 @@ def ask():
     max_retries = 3
     attempt = 0
     tkuser = toolkit.current_user
+    # If they're not a logged in user, don't allow them to see content
+    if tkuser.name is None:
+        return {'success': False,
+                'msg': 'Must be logged in to view site'}
     user = CKANUser(id=tkuser.id, name=tkuser.name)
     log.debug(user)
     while attempt < max_retries:
