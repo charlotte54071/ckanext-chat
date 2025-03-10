@@ -1,367 +1,518 @@
 ckan.module("chat-module", function ($, _) {
   "use strict";
+  _ = _ || window._; // use underscore if available
+
+  // Private helper: Render Markdown and sanitize output
+  function renderMarkdown(content) {
+    var cleanHtml = "";
+    if (Array.isArray(content)) {
+      cleanHtml = content
+        .map(function (item) {
+          var rawHtml = marked.parse(item);
+          return DOMPurify.sanitize(rawHtml, {
+            ALLOWED_TAGS: [
+              "p",
+              "pre",
+              "code",
+              "span",
+              "div",
+              "br",
+              "strong",
+              "em",
+              "ul",
+              "ol",
+              "li",
+              "a"
+            ],
+            ALLOWED_ATTR: ["class", "href"]
+          });
+        })
+        .join("");
+    } else if (content) {
+      var rawHtml = marked.parse(content);
+      cleanHtml = DOMPurify.sanitize(rawHtml, {
+        ALLOWED_TAGS: [
+          "p",
+          "pre",
+          "code",
+          "span",
+          "div",
+          "br",
+          "strong",
+          "em",
+          "ul",
+          "ol",
+          "li",
+          "a"
+        ],
+        ALLOWED_ATTR: ["class", "href"]
+      });
+    }
+    return cleanHtml;
+  }
+
+  // Private helper: Convert timestamp strings to ISO format recursively
+  function convertTimestampsToISO(data) {
+    if (Array.isArray(data)) {
+      return data.map(convertTimestampsToISO);
+    } else if (typeof data === "object" && data !== null) {
+      return Object.keys(data).reduce(function (acc, key) {
+        acc[key] = convertTimestampsToISO(data[key]);
+        if (key === "timestamp" && typeof acc[key] === "string") {
+          acc[key] = new Date(acc[key]).toISOString();
+        }
+        return acc;
+      }, {});
+    }
+    return data;
+  }
+
   return {
     options: {
-      debug: false,
+      debug: false
+    },
+    currentChatLabel: "Current Chat",
+
+    // Called automatically when the module is instantiated
+    initialize: function () {
+      this.bindUI();
+      this.loadPreviousChats();
+      if (this.options.debug) {
+        console.log("Chat module initialized");
+      }
     },
 
-    initialize: function () {},
-  };
-});
-
-marked.setOptions({
-  highlight: function(code, lang) {
-    return hljs.highlight(code,{ language: lang }).value;;
-  }
-});
-
-
-function renderMarkdown(content) {
-  console.log(content);
-  // Parse the markdown to HTML
-  var cleanHtml = "";
-  
-  if (Array.isArray(content)) {
-    // If content is an array, process each item
-    cleanHtml = content.map(item => {
-      const rawHtml = marked.parse(item);
-      return DOMPurify.sanitize(rawHtml, {
-        ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
-        ALLOWED_ATTR: ['class', 'href']
+    // Bind all UI events within the module container and globally for sidebar elements
+    bindUI: function () {
+      var self = this;
+      // Bind click events within the chat container
+      this.el.find("#sendButton").on("click", function () {
+        self.sendMessage();
       });
-    }).join(""); // Join the array of HTML strings
-  } else if (content) {
-    // If content is a single string, process it
-    const rawHtml = marked.parse(content);
-    cleanHtml = DOMPurify.sanitize(rawHtml, {
-      ALLOWED_TAGS: ['p', 'pre', 'code', 'span', 'div', 'br', 'strong', 'em', 'ul', 'ol', 'li', 'a'],
-      ALLOWED_ATTR: ['class', 'href']
-    });
-  }
-
-  return cleanHtml;
-}
-
-let defaulChatLabel = "Current Chat"; // Initialize current chat label
-let currentChatLabel = defaulChatLabel;
-
-function handleKeyDown(event) {
-  if (event.key === 'Enter' && event.shiftKey) {
-    const textarea = event.target;
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-
-    textarea.value = textarea.value.substring(0, start) + '\n' + textarea.value.substring(end);
-    textarea.selectionStart = textarea.selectionEnd = start + 1;
-  } else if (event.key === 'Enter') {
-    event.preventDefault();
-    sendMessage();
-  }
-}
-// Function to convert timestamps to ISO format
-function convertTimestampsToISO(data) {
-  if (Array.isArray(data)) {
-      return data.map(item => convertTimestampsToISO(item));
-  } else if (typeof data === 'object' && data !== null) {
-      return Object.keys(data).reduce((acc, key) => {
-          acc[key] = convertTimestampsToISO(data[key]);
-
-          // Check if the value is a timestamp string and convert it to ISO if necessary
-          if (key === 'timestamp' && typeof acc[key] === 'string') {
-              acc[key] = new Date(acc[key]).toISOString(); // Convert to ISO format
-          }
-
-          return acc;
-      }, {});
-  }
-  return data; // Return other types unchanged
-}
-function loadPreviousChats() {
-  const chatListElement = document.getElementById('chatList');
-  chatListElement.innerHTML = '';
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  
-  if (chats.length === 0) {
-    chats.push({ title: currentChatLabel, messages: [] }); // Add default item
-    localStorage.setItem('previousChats', JSON.stringify(chats));
-  }
-
-  chats.forEach((chat, index) => {
-    let listItem = document.createElement('li');
-    listItem.className = 'list-group-item list-group-item-action';
-    listItem.textContent = chat.title || 'Chat ' + (index + 1);
-    listItem.onclick = function () {
-      loadChat(index);
-    };
-    chatListElement.appendChild(listItem);
-  });
-}
-
-function loadChat(index) {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  if (chats[index]) {
-    const chat = chats[index];
-    const messagesDiv = document.getElementById('chatbox');
-    messagesDiv.innerHTML = '';
-    chat.messages.forEach(msg => {
-      if (msg.kind === 'request') {
-        // Append user message
-        appendMessage('user', msg.parts);
-      } else if (msg.kind === 'response') {
-        // Append bot message
-        appendMessage('bot', msg.parts);
-      }
-    });
-
-    currentChatLabel = chat.title; // Update current chat label when loading a chat
-  }
-}
-
-// Updated chat history retrieval function (now returns new_messages format)
-function getChatHistory(label = currentChatLabel) {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  const storedData = chats.find(chat => chat.title === label)?.messages || [];
-  return convertTimestampsToISO(storedData);
-}
-
-
-function appendMessage(who, message) {
-  var iconClass = who === 'user' ? 'fas fa-user' : 'fas fa-robot';
-
-  // Ensure message is an array for consistent processing
-  if (!Array.isArray(message)) {
-    message = [{ content: message }];
-  }
-
-  message.forEach(part => {
-    $('#chatbox').append(`
-      <div class="message ${who === 'user' ? 'user-message' : 'bot-message'}">
-        <span class="col-2 avatar"><i class="${iconClass}"></i></span>
-        <div class="col-auto text">
-          ${renderMarkdown(part.content)}
-        </div>
-      </div>
-    `);
-  });
-
-  document.querySelectorAll('pre code').forEach((block) => {
-    if (!block.hasAttribute('data-highlighted')) {
-      hljs.highlightElement(block);
-      block.setAttribute('data-highlighted', 'true');
-    }
-  });
-  addCopyButtonsToCodeBlocks();
-  
-  $('#chatbox').scrollTop($('#chatbox')[0].scrollHeight);
-}
-
-function addCopyButtonsToCodeBlocks() {
-  document.querySelectorAll('pre code').forEach((codeBlock) => {
-    // Check if a button is already added
-    if (codeBlock.parentElement.querySelector('.copy-button')) return;
-
-    // Create the copy button with FontAwesome icon
-    const copyButton = document.createElement('button');
-    copyButton.className = 'copy-button';
-    copyButton.innerHTML = '<i class="fas fa-copy"></i>';
-
-    // Copy code block content when clicked
-    copyButton.addEventListener('click', () => {
-      navigator.clipboard.writeText(codeBlock.innerText).then(() => {
-        // Change icon to indicate success
-        copyButton.innerHTML = '<i class="fas fa-check"></i>';
-        setTimeout(() => {
-          copyButton.innerHTML = '<i class="fas fa-copy"></i>';
-        }, 2000);
-      }).catch(err => {
-        console.error('Failed to copy: ', err);
+      this.el.find("#deleteChatButton").on("click", function () {
+        self.deleteChat();
       });
-    });
+      this.el.find("#newChatButton").on("click", function () {
+        self.newChat();
+      });
+      this.el.find("#regenerateButton").on("click", function () {
+        self.regenerateFailedMessage();
+      });
+      // Bind keydown event for the user input textarea
+      this.el.find("#userInput").on("keydown", function (e) {
+        self.handleKeyDown(e);
+      });
+      // Since the sidebar is rendered outside the module container, bind using a global selector
+      $("#chatList").on("click", "li", function () {
+        var index = $(this).index();
+        self.loadChat(index);
+      });
+    },
 
-    // Ensure the pre element is positioned relatively so the button can be positioned absolutely
-    const preElement = codeBlock.parentElement;
-    preElement.style.position = 'relative';
-    copyButton.style.position = 'absolute';
-    copyButton.style.top = '5px';
-    copyButton.style.right = '5px';
-
-    preElement.appendChild(copyButton);
-  });
-}
-
-function getLastEntryText(array) {
-  const lastEntry = array[array.length - 1];
-  if (lastEntry && lastEntry.parts && lastEntry.parts.length > 0) {
-    const str=lastEntry.parts[lastEntry.parts.length - 1].content;
-    return str.replace(/^"|"$/g, '').trim();
-  }
-  return null; // Return null if there is no valid entry
-}
-
-function sendMessage() {
-  var text = $('#userInput').val();
-  $('#userInput').val('');
-
-  if (text.trim() !== '') {
-      appendMessage('user', text);
-      const chatHistory = getChatHistory(currentChatLabel);
-
-      // If this is the first message, retitle the current chat
-      if (chatHistory.length === 0) {
-          currentChatLabel = "Current Chat";
+    // Handler for keydown on the textarea
+    handleKeyDown: function (event) {
+      if (event.key === "Enter" && event.shiftKey) {
+        var textarea = event.target;
+        var start = textarea.selectionStart;
+        var end = textarea.selectionEnd;
+        textarea.value =
+          textarea.value.substring(0, start) +
+          "\n" +
+          textarea.value.substring(end);
+        textarea.selectionStart = textarea.selectionEnd = start + 1;
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        this.sendMessage();
       }
+    },
 
-      // Reference to the send button and its elements
-      var sendButton = $('#sendButton');
-      var spinner = sendButton.find('.spinner-border');
-      var buttonText = sendButton.find('.button-text');
-      var icon = sendButton.find('.fa-paper-plane');
-
-      // Show the spinner and disable the button
-      sendButton.prop('disabled', true);
-      spinner.removeClass('d-none');
-      buttonText.addClass('d-none');
-      icon.addClass('d-none');
-
-      $.post('chat/ask', { text: "Provide only a 3-word title for this question: " + text })
-          .done(function(data) {
-              const label = getLastEntryText(data.response);
-              if (chatHistory.length === 0) {
-                  // Update the chat title in local storage
-                  updateChatTitle(currentChatLabel, label);
-                  currentChatLabel = label;
-              }
-              sendBotMessage(text, currentChatLabel, function() {
-                // This is the callback to hide the spinner
-                spinner.addClass('d-none');
-                buttonText.removeClass('d-none');
-                icon.removeClass('d-none');
-                sendButton.prop('disabled', false);
-            });
-              
-          })
-          .fail(function() {
-              // Handle errors here
-              alert('An error occurred while processing your request.');
-              spinner.addClass('d-none');
-              buttonText.removeClass('d-none');
-              icon.removeClass('d-none');
-              sendButton.prop('disabled', false);
+    // Load previous chats into the sidebar list
+    loadPreviousChats: function () {
+      var chatListElement = $("#chatList"); // Sidebar is outside the module container
+      chatListElement.empty();
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      if (chats.length === 0) {
+        chats.push({ title: this.currentChatLabel, messages: [] });
+        localStorage.setItem("previousChats", JSON.stringify(chats));
+      }
+      var self = this;
+      chats.forEach(function (chat, index) {
+        var listItem = $("<li>")
+          .addClass("list-group-item list-group-item-action")
+          .text(chat.title || "Chat " + (index + 1))
+          .on("click", function () {
+            self.loadChat(index);
           });
-  }
-}
+        chatListElement.append(listItem);
+      });
+    },
 
-function updateChatTitle(oldLabel, newLabel) {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  let chatIndex = chats.findIndex(chat => chat.title === oldLabel);
+    // Load a specific chat based on its index in localStorage
+    loadChat: function (index) {
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      if (chats[index]) {
+        var chat = chats[index];
+        var messagesDiv = this.el.find("#chatbox");
+        messagesDiv.empty();
+        var self = this;
+        chat.messages.forEach(function (msg) {
+          if (msg.kind === "request") {
+            self.appendMessage("user", msg.parts);
+          } else if (msg.kind === "response") {
+            self.appendMessage("bot", msg.parts);
+          }
+        });
+        this.currentChatLabel = chat.title;
+      }
+    },
 
-  if (chatIndex !== -1) {
-    chats[chatIndex].title = newLabel; // Update the title
-    localStorage.setItem('previousChats', JSON.stringify(chats));
-    loadPreviousChats();
-  }
-}
+    // Retrieve chat history from localStorage and convert timestamps
+    getChatHistory: function (label) {
+      label = label || this.currentChatLabel || "Current Chat";
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      var storedData =
+        (chats.find(function (chat) {
+          return chat.title === label;
+        }) || {}).messages || [];
+      return convertTimestampsToISO(storedData);
+    },
 
-function sendBotMessage(text, label, callback) {
-  const history = getChatHistory(label);
-  $.post('chat/ask', { text: text, history: JSON.stringify(history) }, function(data) {
-    saveChat(data.response, label);
-    appendMessage('bot', data.response[data.response.length - 1].parts);
-    if (callback) callback(); // Call the callback function to hide the spinner
-  });
-}
+    appendMessage: function (who, message) {
+      var iconClass = who === "user" ? "fas fa-user" : "fas fa-robot";
+      if (!Array.isArray(message)) {
+        message = [{ content: message }];
+      }
+      var chatbox = this.el.find("#chatbox");
+      var self = this;
+    
+      // Helper function to format content (supports objects, arrays, or primitives)
+      function formatContent(content) {
+        if (typeof content === "object" && content !== null) {
+          if (Array.isArray(content)) {
+            return "<ul>" + content.map(function(item) {
+              return "<li>" + formatContent(item) + "</li>";
+            }).join("") + "</ul>";
+          } else {
+            var html = "<ul>";
+            for (var key in content) {
+              if (content.hasOwnProperty(key)) {
+                html += "<li>" + key + ": " + formatContent(content[key]) + "</li>";
+              }
+            }
+            html += "</ul>";
+            return html;
+          }
+        } else {
+          return String(content);
+        }
+      }
+    
+      // Group tool-call/tool-return parts by tool_call_id.
+      var toolGroups = {};
+      var nonToolParts = [];
+    
+      message.forEach(function (part, idx) {
+        // Skip system prompts.
+        if (part.part_kind === "system-prompt") return;
+    
+        if (part.part_kind === "tool-call" || part.part_kind === "tool-return") {
+          var id = part.tool_call_id;
+          if (!toolGroups[id]) {
+            toolGroups[id] = { parts: [], order: idx };
+          }
+          toolGroups[id].parts.push(part);
+        } else {
+          nonToolParts.push({ part: part, order: idx });
+        }
+      });
+    
+      // Process each tool group.
+      Object.keys(toolGroups)
+        .sort(function (a, b) {
+          return toolGroups[a].order - toolGroups[b].order;
+        })
+        .forEach(function (groupId) {
+          var group = toolGroups[groupId].parts;
+          var argumentsContent = "";
+          var outputContent = "";
+          var combinedTimestamp = group[0].timestamp;
+          var toolName = group[0].tool_name;
+          var succeeded = false;
+    
+          group.forEach(function (p) {
+            // Update timestamp if this part's timestamp is newer.
+            if (new Date(p.timestamp) > new Date(combinedTimestamp)) {
+              combinedTimestamp = p.timestamp;
+            }
+            if (p.part_kind === "tool-call") {
+              argumentsContent += "<p>Arguments: " + p.args + "</p>";
+            } else if (p.part_kind === "tool-return") {
+              succeeded = true;
+              // Use formatContent to handle objects, arrays, or primitives.
+              outputContent += "<p>Output:</p>" + formatContent(p.content);
+            }
+          });
+    
+          var statusClass = succeeded ? "border-success" : "border-danger";
+          var collapseId = "collapse" + groupId;
+          // Check if a card with this collapseId already exists.
+          var existingCollapse = chatbox.find("#" + collapseId);
+    
+          if (existingCollapse.length > 0) {
+            // Update existing card.
+            var cardContainer = existingCollapse.closest(".col-auto.card");
+            // Remove old status classes and add the new one.
+            cardContainer.removeClass("border-danger border-success").addClass(statusClass);
+            // Update the card title with the latest timestamp.
+            cardContainer.find(".card-title").html("Tool Call: " + toolName + " " + combinedTimestamp);
+            // Append new details to the existing card body.
+            var cardBody = existingCollapse.find(".card-body");
+            cardBody.append(argumentsContent + outputContent);
+          } else {
+            // Create a new card.
+            var combinedCardHtml = $(`
+              <div class="message bot-message">
+                <span class="col-2 avatar"><i class="fas fa-robot"></i></span>
+                <div class="col-auto card text ${statusClass}" style="cursor:pointer;">
+                  <div class="card-body p-0">
+                    <h5 class="card-title">Tool Call: ${toolName} ${combinedTimestamp}</h5>
+                    <div class="collapse mt-2" id="${collapseId}">
+                      <div class="card card-body">
+                        ${argumentsContent}
+                        ${outputContent}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `);
+            combinedCardHtml.on("click", function () {
+              self.toggleDetails(collapseId);
+            });
+            chatbox.append(combinedCardHtml);
+          }
+        });
+    
+      // Process non-tool parts in order.
+      nonToolParts.sort(function (a, b) {
+        return a.order - b.order;
+      });
+      nonToolParts.forEach(function (item) {
+        var part = item.part;
+        var messageHtml = $(`
+          <div class="message ${who === "user" ? "user-message" : "bot-message"}">
+            <span class="col-2 avatar"><i class="${iconClass}"></i></span>
+            <div class="col-auto text">
+              ${renderMarkdown(part.content)}
+            </div>
+          </div>
+        `);
+        chatbox.append(messageHtml);
+      });
+    
+      // Highlight code blocks and add copy buttons.
+      chatbox.find("pre code").each(function () {
+        if (!$(this).attr("data-highlighted")) {
+          hljs.highlightElement(this);
+          $(this).attr("data-highlighted", "true");
+        }
+      });
+      self.addCopyButtonsToCodeBlocks();
+      chatbox.scrollTop(chatbox[0].scrollHeight);
+    },
+    
+    // Toggle collapsible details for tool messages.
+    toggleDetails: function (collapseId) {
+      var collapseElement = document.getElementById(collapseId);
+      if (collapseElement) {
+        new bootstrap.Collapse(collapseElement, { toggle: true });
+      }
+    },
+            
+    // Add copy buttons to code blocks
+    addCopyButtonsToCodeBlocks: function () {
+      this.el.find("pre code").each(function () {
+        var codeBlock = $(this);
+        if (codeBlock.parent().find(".copy-button").length > 0) return;
+        var copyButton = $(
+          '<button class="copy-button"><i class="fas fa-copy"></i></button>'
+        );
+        copyButton.on("click", function () {
+          navigator.clipboard
+            .writeText(codeBlock.text())
+            .then(function () {
+              copyButton.html('<i class="fas fa-check"></i>');
+              setTimeout(function () {
+                copyButton.html('<i class="fas fa-copy"></i>');
+              }, 2000);
+            })
+            .catch(function (err) {
+              console.error("Failed to copy: ", err);
+            });
+        });
+        var preElement = codeBlock.parent();
+        preElement.css("position", "relative");
+        copyButton.css({ position: "absolute", top: "5px", right: "5px" });
+        preElement.append(copyButton);
+      });
+    },
 
-// Updated function to save new messages into chat history
-function saveChat(newMessages, label) {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  let existingChatIndex = chats.findIndex(chat => chat.title === label);
-  
-  if (existingChatIndex === -1) {
-    chats.push({ title: label, messages: [] });
-    existingChatIndex = chats.length - 1;
-  }
-  
-  // Append newMessages (expected to be an array) to the existing chat messages
-  chats[existingChatIndex].messages = chats[existingChatIndex].messages.concat(newMessages);
-  
-  localStorage.setItem('previousChats', JSON.stringify(chats));
-}
+    // Retrieve text from the last entry (used for renaming the chat)
+    getLastEntryText: function (array) {
+      var lastEntry = array[array.length - 1];
+      if (lastEntry && lastEntry.parts && lastEntry.parts.length > 0) {
+        var str = lastEntry.parts[lastEntry.parts.length - 1].content;
+        return str.replace(/^"|"$/g, "").trim();
+      }
+      return null;
+    },
 
-// New function to regenerate a failed question
-function regenerateFailedMessage() {
-  // Optionally, retrieve the last user message from the input field or a stored variable
-  let lastUserInput = $('#userInput').val();
-  if (lastUserInput.trim() === '') {
-      alert("No message to regenerate.");
-      return;
-  }
-  
-  // Clear any previous flash messages
-  $('.flash-messages').empty();
-  
-  // Re-run the sendMessage function to resend the message
-  sendMessage();
-}
-function sendFile() {
-  var file = $('#fileInput').prop('files')[0];
-  var formData = new FormData();
-  formData.append('file', file);
+    // Send a user message and then trigger a bot reply
+    sendMessage: function () {
+      var self = this;
+      var text = this.el.find("#userInput").val();
+      this.el.find("#userInput").val("");
+      if (text.trim() !== "") {
+        self.appendMessage("user", text);
+        var chatHistory = self.getChatHistory();
+        if (!chatHistory.length) {
+          self.currentChatLabel = "Current Chat";
+        }
+        var sendButton = this.el.find("#sendButton");
+        var spinner = sendButton.find(".spinner-border");
+        var buttonText = sendButton.find(".button-text");
+        var icon = sendButton.find(".fa-paper-plane");
+        sendButton.prop("disabled", true);
+        spinner.removeClass("d-none");
+        buttonText.addClass("d-none");
+        icon.addClass("d-none");
 
-  $.ajax({
-    url: '/upload',
-    type: 'POST',
-    data: formData,
-    contentType: false,
-    processData: false,
-    success: function(data) {
-      appendMessage('user', 'Uploaded a file');
-      appendMessage('bot', data.response);
+        $.post("chat/ask", { text: "Provide only a 3-word title for this question: " + text })
+          .done(function (data) {
+            var label = self.getLastEntryText(data.response);
+            if (!chatHistory.length) {
+              self.updateChatTitle(self.currentChatLabel, label);
+              self.currentChatLabel = label;
+            }
+            self.sendBotMessage(text, self.currentChatLabel, function () {
+              spinner.addClass("d-none");
+              buttonText.removeClass("d-none");
+              icon.removeClass("d-none");
+              sendButton.prop("disabled", false);
+            });
+          })
+          .fail(function () {
+            alert("An error occurred while processing your request.");
+            spinner.addClass("d-none");
+            buttonText.removeClass("d-none");
+            icon.removeClass("d-none");
+            sendButton.prop("disabled", false);
+          });
+      }
+    },
+
+    // Update the chat title in localStorage
+    updateChatTitle: function (oldLabel, newLabel) {
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      var chatIndex = chats.findIndex(function (chat) {
+        return chat.title === oldLabel;
+      });
+      if (chatIndex !== -1) {
+        chats[chatIndex].title = newLabel;
+        localStorage.setItem("previousChats", JSON.stringify(chats));
+        this.loadPreviousChats();
+      }
+    },
+
+    // Send a request to the bot and append its reply
+    sendBotMessage: function (text, label, callback) {
+      var history = this.getChatHistory(label);
+      var self = this;
+      $.post("chat/ask", { text: text, history: JSON.stringify(history) }, function (data) {
+        self.saveChat(data.response, label);
+        data.response.forEach(function (msg, index) {
+          // Skip the first element by checking the index because its the lat user prompt
+          if (index === 0) return;
+          console.log(msg)
+          if (msg.kind === "request") {
+            self.appendMessage("bot", msg.parts);
+          } else if (msg.kind === "response") {
+            self.appendMessage("bot", msg.parts);
+          }
+        });
+        // self.appendMessage("bot", data.response[data.response.length - 1].parts);
+        if (callback) callback();
+      });
+    },
+
+    // Save new messages to the chat history in localStorage
+    saveChat: function (newMessages, label) {
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      var existingChatIndex = chats.findIndex(function (chat) {
+        return chat.title === label;
+      });
+      if (existingChatIndex === -1) {
+        chats.push({ title: label, messages: [] });
+        existingChatIndex = chats.length - 1;
+      }
+      chats[existingChatIndex].messages = chats[existingChatIndex].messages.concat(newMessages);
+      localStorage.setItem("previousChats", JSON.stringify(chats));
+    },
+
+    // Regenerate the failed message (if any)
+    regenerateFailedMessage: function () {
+      var lastUserInput = this.el.find("#userInput").val();
+      if (lastUserInput.trim() === "") {
+        alert("No message to regenerate.");
+        return;
+      }
+      $(".flash-messages").empty();
+      this.sendMessage();
+    },
+
+    // Send a file via AJAX (if needed)
+    sendFile: function () {
+      var file = this.el.find("#fileInput").prop("files")[0];
+      var formData = new FormData();
+      formData.append("file", file);
+      $.ajax({
+        url: "/upload",
+        type: "POST",
+        data: formData,
+        contentType: false,
+        processData: false,
+        success: (data) => {
+          this.appendMessage("user", "Uploaded a file");
+          this.appendMessage("bot", data.response);
+        }
+      });
+    },
+
+    // Delete the current chat and update localStorage
+    deleteChat: function () {
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      var currentLabel = this.currentChatLabel || "Current Chat";
+      var chatIndex = chats.findIndex(function (chat) {
+        return chat.title === currentLabel;
+      });
+      if (chatIndex !== -1) {
+        chats.splice(chatIndex, 1);
+        localStorage.setItem("previousChats", JSON.stringify(chats));
+        this.loadPreviousChats();
+        this.el.find("#chatbox").empty();
+        this.currentChatLabel = "Current Chat";
+      }
+    },
+
+    // Start a new chat session
+    newChat: function () {
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      chats.push({ title: "Current Chat", messages: [] });
+      localStorage.setItem("previousChats", JSON.stringify(chats));
+      this.el.find("#chatbox").empty();
+      this.el.find("#userInput").val("");
+      this.currentChatLabel = "Current Chat";
+      this.loadPreviousChats();
     }
-  });
-}
-
-document.getElementById('deleteChatButton').onclick = function() {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  
-  // Find the index of the chat with the current label
-  const currentLabel = currentChatLabel; // Assuming currentChatLabel holds the label of the current chat
-  const chatIndex = chats.findIndex(chat => chat.title === currentLabel);
-  
-  if (chatIndex !== -1) {
-      // Remove the chat with the current label
-      chats.splice(chatIndex, 1);
-      localStorage.setItem('previousChats', JSON.stringify(chats));
-      loadPreviousChats();
-      document.getElementById('chatbox').innerHTML = '';
-      currentChatLabel = defaulChatLabel; // Reset the current chat label if needed
-  }
-};
-document.getElementById('newChatButton').onclick = function() {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  
-  // Create a new empty chat with a default name
-  chats.push({ title: defaulChatLabel, messages: [] }); // Create an empty chat
-
-  localStorage.setItem('previousChats', JSON.stringify(chats)); // Save to local storage
-  
-  // Clear the chat area for a new chat
-  document.getElementById('chatbox').innerHTML = '';
-  $('#userInput').val('');
-  currentChatLabel = defaulChatLabel; // Set current chat label to the new chat's name
-
-  loadPreviousChats(); // Refresh the chat list in the UI
-};
-document.getElementById('regenerateButton').onclick = function() {
-  regenerateFailedMessage();
-};
-window.addEventListener('load', function() {
-  let chats = JSON.parse(localStorage.getItem('previousChats')) || [];
-  
-  // Add the current chat only on the first load
-  if (!chats.some(chat => chat.title === currentChatLabel)) {
-    chats.push({ title: currentChatLabel, messages: [] });
-    localStorage.setItem('previousChats', JSON.stringify(chats));
-  }
-  
-  loadPreviousChats(); // Load previous chats after ensuring the current chat is added
+  };
 });
