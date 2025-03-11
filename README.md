@@ -4,6 +4,8 @@
 
 A plugin integrating a chat interface in ckan with a [pydanticai](https://ai.pydantic.dev/) agent that can use all available ckan actions and url_patterns. All actions are done with user aware context. The chat interface uses marked and highightjs to display responses. Chat histories are saved in the local storage of the user. The agent is chat history aware. 
 
+![chat example](./ckanext-chat.PNG)
+
 ## Requirements
 
 A completion endpoint of the LLM model to use with the agent is needed. Currently uses Azure Cognitive Servcie Integration.
