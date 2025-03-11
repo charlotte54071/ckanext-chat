@@ -18,8 +18,8 @@
   <div class="module-content">
     {% block page_primary_action %}
     <div class="actions">
-      <a class="btn btn-danger btn-action" id="deleteChatButton">Delete Current Chat</a>
-      <a class="btn btn-success btn-action" id="newChatButton">Start New Chat</a>
+      <a class="btn btn-danger btn-action" id="deleteChatButton">{% trans %}Delete Current Chat{% endtrans %}</a>
+      <a class="btn btn-success btn-action" id="newChatButton">{% trans %}Start New Chat{% endtrans %}</a>
     </div>
     {% endblock %}
 
@@ -36,7 +36,7 @@
         <div class="d-flex flex-column" style="min-height:0">
             <div class="d-flex align-items-start pe-1">
                 <div class="flex-grow-1">
-                  <textarea class="span6 w-100 border-0 bg-light " rows="3" id="userInput" placeholder="Ask anything..." required translate="no" data-virtualkeyboard="true" spellcheck="false" ></textarea>
+                  <textarea class="span6 w-100 border-0 bg-light " rows="3" id="userInput" placeholder="{% trans %}Ask anything...{% endtrans %}" required translate="no" data-virtualkeyboard="true" spellcheck="false" ></textarea>
                 </div>
             </div>
         </div>
@@ -63,7 +63,7 @@
             <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage(this)">
               <i class="fa fa-paper-plane"></i>
               <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-              <span class="button-text">Send</span>
+              <span class="button-text">{% trans %}Send{% endtrans %}</span>
             </a>
         </div>
     </div>
@@ -80,7 +80,7 @@
 {% block secondary_content %}
 {% block form %}
 <div class="sidebar bg-light">
-  <h5 class="p-3">Previous Chats</h5>
+  <h5 class="p-3">{% trans %}Previous Chats{% endtrans %}</h5>
   <ul id="chatList" class="list-group list-group-flush">
     <!-- Previous chat list items will be injected here -->
   </ul>

@@ -1,18 +1,19 @@
 import ckan.plugins as plugins
 import ckan.plugins.toolkit as toolkit
 from ckan.config.declaration import Declaration, Key
+from ckan.lib.plugins import DefaultTranslation
 
 from ckanext.chat import action, auth, helpers, views
 
 
-class ChatPlugin(plugins.SingletonPlugin):
+class ChatPlugin(plugins.SingletonPlugin, DefaultTranslation):
     plugins.implements(plugins.IConfigurer)
     plugins.implements(plugins.IConfigDeclaration)
     plugins.implements(plugins.IBlueprint)
     plugins.implements(plugins.ITemplateHelpers)
     plugins.implements(plugins.IAuthFunctions)
     plugins.implements(plugins.IActions)
-    # plugins.implements(plugins.IConfigurable)
+    plugins.implements(plugins.ITranslation)
 
     # IConfigurer
 

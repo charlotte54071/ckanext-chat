@@ -1,0 +1,54 @@
+# Translations template for ckanext-chat.
+# Copyright (C) 2025 ORGANIZATION
+# This file is distributed under the same license as the ckanext-chat project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2025.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: ckanext-chat 0.0.1\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2025-03-11 16:14+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.15.0\n"
+
+#: ckanext/chat/views.py:40
+msgid "Not authorized to see this page"
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:10
+#: ckanext/chat/templates/chat/chat_ui.html:13 ckanext/chat/templates/header.html:7
+msgid "Chat"
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:21
+msgid "Delete Current Chat"
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:22
+msgid "Start New Chat"
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:39
+msgid "Ask anything..."
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:57
+msgid ""
+"This button removes the last bot response and re-sends your last prompt to "
+"regenerate the answer."
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:66
+msgid "Send"
+msgstr ""
+
+#: ckanext/chat/templates/chat/chat_ui.html:83
+msgid "Previous Chats"
+msgstr ""
+
