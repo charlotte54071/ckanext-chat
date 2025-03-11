@@ -461,14 +461,64 @@ ckan.module("chat-module", function ($, _) {
 
     // Regenerate the failed message (if any)
     regenerateFailedMessage: function () {
-      var lastUserInput = this.el.find("#userInput").val();
-      if (lastUserInput.trim() === "") {
-        alert("No message to regenerate.");
+      var currentLabel = this.currentChatLabel || "Current Chat";
+      // Retrieve chat history using your helper
+      var chatHistory = this.getChatHistory(currentLabel);
+      if (!chatHistory.length) {
+        alert("No chat history available.");
         return;
       }
-      $(".flash-messages").empty();
+    
+      // Locate the last message containing a part with "user-prompt"
+      var lastUserIndex = -1;
+      for (var i = chatHistory.length - 1; i >= 0; i--) {
+        if (chatHistory[i].parts && chatHistory[i].parts.some(function (part) {
+          return part.part_kind === "user-prompt";
+        })) {
+          lastUserIndex = i;
+          break;
+        }
+      }
+      if (lastUserIndex === -1) {
+        alert("No user prompt found in chat history.");
+        return;
+      }
+    
+      // Remove the last user prompt message from the stored chat history
+      var newChatHistory = chatHistory.slice(0, lastUserIndex);
+    
+      // Update localStorage with the trimmed chat history
+      var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      var chatIndex = chats.findIndex(function (chat) {
+        return chat.title === currentLabel;
+      });
+      if (chatIndex === -1) {
+        alert("Current chat not found in storage.");
+        return;
+      }
+      chats[chatIndex].messages = newChatHistory;
+      localStorage.setItem("previousChats", JSON.stringify(chats));
+    
+      // Refresh the chat UI
+      this.el.find("#chatbox").empty();
+      this.loadChat(chatIndex);
+    
+      // Retrieve the user prompt text from the removed message
+      var lastUserMessage = chatHistory[lastUserIndex];
+      var userPromptPart = lastUserMessage.parts.find(function (part) {
+        return part.part_kind === "user-prompt";
+      });
+      var userText = userPromptPart ? String(userPromptPart.content) : "";
+      if (!userText.trim()) {
+        alert("User prompt text is empty.");
+        return;
+      }
+    
+      // Set the user input field and call sendMessage (which triggers the spinner)
+      this.el.find("#userInput").val(userText);
       this.sendMessage();
     },
+
 
     // Send a file via AJAX (if needed)
     sendFile: function () {

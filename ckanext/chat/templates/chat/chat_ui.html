@@ -36,7 +36,7 @@
         <div class="d-flex flex-column" style="min-height:0">
             <div class="d-flex align-items-start pe-1">
                 <div class="flex-grow-1">
-                  <textarea class="span6 w-100 border-0 bg-light " rows="3" id="userInput" placeholder="Ask anything..." required translate="no" data-virtualkeyboard="true" spellcheck="false" onkeydown="handleKeyDown(event)"></textarea>
+                  <textarea class="span6 w-100 border-0 bg-light " rows="3" id="userInput" placeholder="Ask anything..." required translate="no" data-virtualkeyboard="true" spellcheck="false" ></textarea>
                 </div>
             </div>
         </div>
@@ -48,10 +48,16 @@
                 <a class="btn btn-outline-secondary" aria-label="File" id="fileInput" onclick="$('#fileInput').click()">
                   <input type="file" id="fileInput" class="d-none">
                   <i class="fa fa-plus"></i>
-                </a>
-                <a class="btn btn-outline-info"  aria-label="Regenerate" id="regenerateButton">
-                    <i class="fa fa-arrows-rotate"></i>
                 </a> -->
+                <a class="btn btn-outline-info" 
+                  aria-label="Regenerate" 
+                  id="regenerateButton"
+                  data-bs-toggle="tooltip" 
+                  data-bs-placement="top" 
+                  title="{% trans %}This button removes the last bot response and re-sends your last prompt to regenerate the answer.{% endtrans %}">
+                  <i class="fa fa-arrows-rotate"></i>
+                </a>
+
                 {% endblock %}
             </div>
             <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage(this)">
