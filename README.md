@@ -51,18 +51,19 @@ To install ckanext-chat:
 
 ## Config settings
 
-In ur env variables set:
-
+In your env variables set:
+```bash
 CKANINI__CKANEXT__CHAT__COMPLETION_URL="https://your-subscription.openai.azure.com/"
 CKANINI__CKANEXT__CHAT__DEPLOYMENT="gpt-4o"
 CKANINI__CKANEXT__CHAT__API_TOKEN="your-api-token"
-
+```
 or ckan.ini parameters.
 
+```ini
 ckanext.chat.completion_url="https://your-subscription.openai.azure.com/"
 ckanext.chat.deployment="gpt-4o"
 ckanext.chat.api_token="your-api-token"
-
+```
 
 ## Tests
 
