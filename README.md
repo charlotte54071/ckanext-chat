@@ -8,7 +8,7 @@ A plugin integrating a chat interface in ckan with a [pydanticai](https://ai.pyd
 
 ## Requirements
 
-A completion endpoint of the LLM model to use with the agent is needed. Currently uses Azure Cognitive Servcie Integration.
+A completion endpoint of the LLM model to use with the agent is needed. Currently uses Azure Cognitive Service Integration.
 can be changed by replacing the client in /bot/agent.py
 
 Compatibility with core CKAN versions:
