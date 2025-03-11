@@ -2,24 +2,20 @@
 
 # ckanext-chat
 
-**TODO:** Put a description of your extension here:  What does it do? What features does it have? Consider including some screenshots or embedding a video!
-
+A plugin integrating a chat interface in ckan with a [pydanticai](https://ai.pydantic.dev/) agent that can use all available ckan actions and url_patterns. All actions are done with user aware context. The chat interface uses marked and highightjs to display responses. Chat histories are saved in the local storage of the user. The agent is chat history aware. 
 
 ## Requirements
 
-**TODO:** For example, you might want to mention here which versions of CKAN this
-extension works with.
-
-If your extension works across different versions you can add the following table:
+A completion endpoint of the LLM model to use with the agent is needed. Currently uses Azure Cognitive Servcie Integration.
+can be changed by replacing the client in /bot/agent.py
 
 Compatibility with core CKAN versions:
 
 | CKAN version    | Compatible?   |
 | --------------- | ------------- |
-| 2.6 and earlier | not tested    |
-| 2.7             | not tested    |
-| 2.8             | not tested    |
-| 2.9             | not tested    |
+| 2.9 and earlier | not tested    |
+| 2.10             | not tested    |
+| 2.11             | not tested    |
 
 Suggested values:
 
@@ -30,10 +26,6 @@ Suggested values:
 
 
 ## Installation
-
-**TODO:** Add any additional install steps to the list below.
-   For example installing any non-Python dependencies or adding any required
-   config settings.
 
 To install ckanext-chat:
 
@@ -59,24 +51,17 @@ To install ckanext-chat:
 
 ## Config settings
 
-None at present
+In ur env variables set:
 
-**TODO:** Document any optional config settings here. For example:
+CKANINI__CKANEXT__CHAT__COMPLETION_URL="https://your-subscription.openai.azure.com/"
+CKANINI__CKANEXT__CHAT__DEPLOYMENT="gpt-4o"
+CKANINI__CKANEXT__CHAT__API_TOKEN="your-api-token"
 
-	# The minimum number of hours to wait before re-checking a resource
-	# (optional, default: 24).
-	ckanext.chat.some_setting = some_default_value
+or ckan.ini parameters.
 
-
-## Developer installation
-
-To install ckanext-chat for development, activate your CKAN virtualenv and
-do:
-
-    git clone https://github.com/Mat-O-Lab/ckanext-chat.git
-    cd ckanext-chat
-    pip install -e .
-    pip install -r dev-requirements.txt
+ckanext.chat.completion_url="https://your-subscription.openai.azure.com/"
+ckanext.chat.deployment="gpt-4o"
+ckanext.chat.api_token="your-api-token"
 
 
 ## Tests

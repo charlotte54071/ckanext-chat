@@ -30,7 +30,7 @@ class ChatPlugin(plugins.SingletonPlugin):
         declaration.declare_bool(group.ssl_verify, True)
         declaration.declare(group.completion_url, "https://your.chat.api")
         declaration.declare(group.deployment, "gpt-4-vision-preview")
-        declaration.declare(group.api_token, "")
+        declaration.declare(group.api_token, "your-api-token")
         log = __import__("logging").getLogger(__name__)
 
     # IBlueprint
