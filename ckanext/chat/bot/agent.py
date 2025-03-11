@@ -23,11 +23,11 @@ log = __import__("logging").getLogger(__name__)
 _actions = []
 
 client = AsyncAzureOpenAI(
-    azure_endpoint=toolkit.config.get("ckanext.chat.completion_url"),
+    azure_endpoint=toolkit.config.get("ckanext.chat.completion_url","https://your.chat.api"),
     api_version="2024-05-01-preview",
-    api_key=toolkit.config.get("ckanext.chat.api_token"),
+    api_key=toolkit.config.get("ckanext.chat.api_token","your-api-token"),
 )
-deployment = toolkit.config.get("ckanext.chat.deployment")
+deployment = toolkit.config.get("ckanext.chat.deployment","gpt-4-vision-preview")
 model = OpenAIModel(deployment, openai_client=client)
 
 # Global flag to ensure dynamic models are initialized once.
