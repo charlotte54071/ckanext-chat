@@ -9,6 +9,7 @@ import nest_asyncio
 # Import CKAN models for datasets and resources
 from ckan.model.package import Package
 from ckan.model.resource import Resource
+from ckan.lib.lazyjson import LazyJSONObject
 from openai import AsyncAzureOpenAI
 from pydantic import (BaseModel, ValidationError, computed_field, create_model,
                       root_validator)
@@ -243,11 +244,22 @@ def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) ->
         log.debug(response)
     except Exception as e:
         return {"error": str(e)}
+    
+    def unpack_lazy_json(obj):
+        if isinstance(obj, dict):
+            return {key: unpack_lazy_json(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [unpack_lazy_json(item) for item in obj]
+        elif isinstance(obj, LazyJSONObject):  # Replace with the actual class name
+            return obj.encoded_json  # Unpacking the LazyJSONObject instance
+        return obj
 
     def convert_entity(entity: Any) -> Any:
         # If the entity is a dict, try converting to a dynamic model.
         if isinstance(entity, dict):
             # If it's likely a dataset (has a 'resources' key), convert accordingly.
+            entity = unpack_lazy_json(entity)  # Unpack LazyJSONObjects first
+
             if "resources" in entity:
                 try:
                     return DynamicDataset(**entity).dict()
@@ -271,6 +283,7 @@ def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) ->
                 except Exception as ex:
                     log.warning(f"Conversion to DynamicResource failed: {ex}")
                     return entity
+
         return entity
 
     if isinstance(response, list):
