@@ -85,7 +85,7 @@
   color: var(--bs-body-color);
 }
 
-.avatar {
+.chatavatar {
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -100,7 +100,7 @@
   border: none; /* Removes the border */
   outline: none; /* Removes the outline if present */
 }
-.user-message .avatar {
+.user-message .chatavatar {
   background-color: rgba(var(--bs-primary-rgb),1.0); /* Replace with the actual color */
   color:var(--bs-body-bg);
 }
@@ -112,7 +112,7 @@
   max-width: 90%;
 }
 
-.bot-message .avatar {
+.bot-message .chatavatar {
   background-color: rgba(var(--bs-secondary-rgb),1.0); /* Replace with the actual color */
   color:var(--bs-body-bg);
 }

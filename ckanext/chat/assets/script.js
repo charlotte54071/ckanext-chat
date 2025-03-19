@@ -272,7 +272,7 @@ ckan.module("chat-module", function ($, _) {
             // Create a new card.
             var combinedCardHtml = $(`
               <div class="message bot-message">
-                <span class="col-2 avatar"><i class="fas fa-robot"></i></span>
+                <span class="col-2 chatavatar"><i class="fas fa-robot"></i></span>
                 <div class="col-auto card text ${statusClass}" style="cursor:pointer;">
                   <div class="card-body p-0">
                     <h5 class="card-title">Tool Call: ${toolName} ${combinedTimestamp}</h5>
@@ -301,7 +301,7 @@ ckan.module("chat-module", function ($, _) {
         var part = item.part;
         var messageHtml = $(`
           <div class="message ${who === "user" ? "user-message" : "bot-message"}">
-            <span class="col-2 avatar"><i class="${iconClass}"></i></span>
+            <span class="col-2 chatavatar"><i class="${iconClass}"></i></span>
             <div class="col-auto text">
               ${renderMarkdown(part.content)}
             </div>
