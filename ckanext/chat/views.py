@@ -11,7 +11,7 @@ from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
                                     UnexpectedModelBehavior,
                                     UsageLimitExceeded)
 
-from ckanext.chat.bot.agent import agent_response
+from ckanext.chat.bot.agent import agent_response, exception_to_model_response
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
@@ -73,33 +73,10 @@ def ask():
             response = agent_response(user, user_input, history)
             # Now response is guaranteed to have new_messages() if no exception occurred.
             return jsonify({"response": response.new_messages()})
-        except (
-            UsageLimitExceeded,
-            ModelRetry,
-            UnexpectedModelBehavior,
-            AgentRunError,
-            ModelHTTPError,
-            FallbackExceptionGroup,
-        ) as e:
-            flash(f"Error Agent: {str(e)}", "danger")
-            log.error(f"Attempt {attempt + 1}: Error Agent: {e}")
-            attempt += 1
         except Exception as e:
-            # Generic catch-all to ensure we don't try to call new_messages on an error object.
-            flash(f"Error Unknown: {str(e)}", "danger")
-            log.error(f"Attempt {attempt + 1}: Error Unknown: {e}")
-            attempt += 1
-
-    # If all attempts fail, flash an error message and return an error response
-    flash(
-        "Failed to get a valid response from the AI model after multiple attempts.",
-        "danger",
-    )
-    return (
-        jsonify({"error": "Failed to get a valid response. Please try regenerating."}),
-        500,
-    )
-
+            error_response = exception_to_model_response(e)
+            log.error(error_response)
+            return jsonify({"response": [error_response,]})
 
 blueprint.add_url_rule(
     "/chat",

@@ -214,6 +214,8 @@ ckan.module("chat-module", function ($, _) {
       message.forEach(function (part, idx) {
         // Skip system prompts.
         if (part.part_kind === "system-prompt") return;
+        // ignore repeated user prompt when returned by bot
+        if (who==="bot" && part.part_kind === "user-prompt") return;
     
         if (part.part_kind === "tool-call" || part.part_kind === "tool-return") {
           var id = part.tool_call_id;
@@ -432,8 +434,8 @@ ckan.module("chat-module", function ($, _) {
         self.saveChat(data.response, label);
         data.response.forEach(function (msg, index) {
           // Skip the first element by checking the index because its the lat user prompt
-          if (index === 0) return;
-          console.log(msg)
+          // if (index === 0) return;
+          // console.log(msg)
           if (msg.kind === "request") {
             self.appendMessage("bot", msg.parts);
           } else if (msg.kind === "response") {

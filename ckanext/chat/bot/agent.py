@@ -2,6 +2,7 @@
 import json
 import re
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
@@ -14,8 +15,13 @@ from openai import AsyncAzureOpenAI
 from pydantic import (BaseModel, ValidationError, computed_field, create_model,
                       root_validator)
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelResponse, TextPart
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
+                                    ModelHTTPError, ModelRetry,
+                                    UnexpectedModelBehavior,
+                                    UsageLimitExceeded)
+
 
 nest_asyncio.apply()
 
@@ -105,6 +111,7 @@ agent = Agent(
     model=model,
     deps_type=CKANUser,
     system_prompt=system_prompt,
+    retries=3,
 )
 
 
@@ -362,3 +369,23 @@ class DynamicResource(BaseModel):
     def from_ckan(cls, resource: Resource) -> "DynamicResource":
         data = resource.as_dict() if hasattr(resource, "as_dict") else resource.__dict__
         return cls(**data)
+
+
+def exception_to_model_response(exc: Exception) -> ModelResponse:
+    # For our known exceptions, we pass along the error text
+    if isinstance(exc, (UsageLimitExceeded, ModelRetry, UnexpectedModelBehavior, AgentRunError, ModelHTTPError, FallbackExceptionGroup)):
+        error_text = str(exc)
+    else:
+        # For all other errors, create a custom message.
+        error_text = f"An unexpected error occurred: {type(exc).__name__}: {exc}"
+    
+    # Create a TextPart that carries the error message.
+    error_part = TextPart(content=error_text)
+    
+    # Construct a ModelResponse using the error part.
+    return ModelResponse(
+        parts=[error_part],
+        model_name="pydanticai",  # Or your specific model identifier
+        timestamp=datetime.now(timezone.utc),
+        kind="response",
+    )
