@@ -3,3 +3,5 @@ openai
 black
 logfire[httpx]
 nest_asyncio
+pymilvus==2.5.5
+tiktoken

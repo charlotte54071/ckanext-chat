@@ -1,41 +1,148 @@
 # from dotenv import load_dotenv
 import json
 import re
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
 import nest_asyncio
+from ckan.lib.lazyjson import LazyJSONObject
+
 # Import CKAN models for datasets and resources
 from ckan.model.package import Package
 from ckan.model.resource import Resource
-from ckan.lib.lazyjson import LazyJSONObject
 from openai import AsyncAzureOpenAI
-from pydantic import (BaseModel, ValidationError, computed_field, create_model,
-                      root_validator)
+from pydantic import (
+    BaseModel,
+    HttpUrl,
+    ValidationError,
+    computed_field,
+    create_model,
+    root_validator,
+)
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelResponse, TextPart
+from pydantic_ai.exceptions import (
+    AgentRunError,
+    FallbackExceptionGroup,
+    ModelHTTPError,
+    ModelRetry,
+    UnexpectedModelBehavior,
+    UsageLimitExceeded,
+)
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
-                                    ModelHTTPError, ModelRetry,
-                                    UnexpectedModelBehavior,
-                                    UsageLimitExceeded)
+from pymilvus import MilvusClient
+import tiktoken
 
+def truncate_output_by_token(output: str, token_limit: int, encoding_name="cl100k_base") -> str:
+    encoding = tiktoken.get_encoding(encoding_name)
+    tokens = encoding.encode(output)
+    if len(tokens) > token_limit:
+        truncated_tokens = tokens[:token_limit]
+        output = encoding.decode(truncated_tokens)
+    return output
+def truncate_value(value, max_length):
+    if isinstance(value, str):
+        return value[:max_length] + '...' if len(value) > max_length else value
+    elif isinstance(value, list):
+        truncated_list = [truncate_value(item, max_length) for item in value]
+        return truncated_list[:max_length] + ['...'] if len(truncated_list) > max_length else truncated_list
+    return value
 
+def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
+    """
+    Recursively traverse the JSON-like structure (dicts and lists)
+    and replace content beyond max_depth with a placeholder.
+    """
+    if current_depth >= max_depth:
+        return placeholder
+
+    if isinstance(data, dict):
+        return {key: truncate_by_depth(truncate_value(value,max_length=200), max_depth, current_depth + 1, placeholder)
+                for key, value in data.items()}
+
+    if isinstance(data, list):
+        data=truncate_value(data,max_length=200)
+        return [truncate_by_depth(item, max_depth, current_depth + 1, placeholder) for item in data]
+
+    # For any other type (str, int, float, etc.), return the value directly.
+    return data
+def clean_json(data):
+    if isinstance(data, dict):
+        return {k: clean_json(v) for k, v in data.items() if clean_json(v) not in ([], {}, '', None)}
+    elif isinstance(data, list):
+        return [clean_json(item) for item in data if clean_json(item) not in ([], {}, '', None)]
+    else:
+        return data
 nest_asyncio.apply()
 
 log = __import__("logging").getLogger(__name__)
 
+milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
+collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
+vector_dim=None
+if milvus_url:
+    milvus_client = MilvusClient(uri=milvus_url)
+    if milvus_client:
+        # Get the collection info (schema, etc.)
+        collection_info = milvus_client.describe_collection(collection_name=collection_name)
+
+        # Attempt to find the first field that has a 'dim' parameter
+        vector_field = None
+        for entry in collection_info["fields"]:
+            # Check if this field is a vector field by verifying if it has a 'dim' parameter
+            if "params" in entry.keys() and "dim" in entry["params"].keys():
+                vector_field = entry
+                break
+        if vector_field:
+            vector_dim = vector_field["params"]["dim"]
+            field_name=vector_field["name"]
+            log.debug(f"Found vector field: {field_name}")
+            log.debug(f"Vector dimension is: {vector_dim}")
+        else:
+            vector_dim = None
+            log.debug("No vector field found in the collection schema.")
+    else:
+        log.debug("Milvus client not initialized.")
+
+else:
+    milvus_client = None
+
+
+@dataclass
+class Deps:
+    user_id: str
+    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
+    openai: AsyncAzureOpenAI = field(default_factory=lambda: azure_client)
+    max_context_length: int = 8192
+    collection_name: str = collection_name
+    vector_dim: int = vector_dim
+
+
+nest_asyncio.apply()
+
+
 _actions = []
 
-client = AsyncAzureOpenAI(
-    azure_endpoint=toolkit.config.get("ckanext.chat.completion_url","https://your.chat.api"),
-    api_version="2024-05-01-preview",
-    api_key=toolkit.config.get("ckanext.chat.api_token","your-api-token"),
+azure_client = AsyncAzureOpenAI(
+    azure_endpoint=toolkit.config.get(
+        "ckanext.chat.completion_url", "https://your.chat.api"
+    ),
+    api_version="2024-02-15-preview",
+    api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
 )
-deployment = toolkit.config.get("ckanext.chat.deployment","gpt-4-vision-preview")
-model = OpenAIModel(deployment, openai_client=client)
+deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
+model = OpenAIModel(deployment, openai_client=azure_client)
+
 
 # Global flag to ensure dynamic models are initialized once.
 dynamic_models_initialized = False
@@ -88,18 +195,17 @@ system_prompt = (
     "- **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
     "- **Description:** Executes a specified CKAN action with the given parameters. This allows for dynamic interaction with the CKAN backend to perform operations like creating or updating datasets, querying data, or managing organizational details.\n"
     "- **Usage:** Use this function to perform specific actions within CKAN by providing the action name and necessary parameters.\n\n"
+    "5. **Retrieve documents:**\n"
+    "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
+    "- **Description:** Retrieves References to chunks in datasets doing vector search on a list of search strings. Each hit includes details on the dataset_id, the resource with the chunks and simularity metrics. "
+    "- **Usage:** Call this function to obtain chunks of documents related to the users interest. Use the resource_show action on hits to enrich the information before presenting it to the user.\n\n"
     "**Guidelines for Enhancing Outputs with Useful Links:**\n\n"
     "- **Utilize URL Patterns:** Leverage the URL patterns retrieved from `get_ckan_url_patterns()` to replace all names of CKAN objects in your response by links to the appropriate CKAN View. For example, use the dataset.read pattern for dataset names.\n\n"
     "- **Use Of Actions:** Run actions like search and get right away without user confirmation. When suggesting actions or operations that manipulate data, ask for confirmation and reference the corresponding CKAN action functions. Allways prefer patch actions to update actions, because update deletes data not set in the action call.This not only clarifies the steps involved but also guides users on how to perform these actions programmatically.\n\n"
-    "- **Search:** If the user is asking about datasets or resources use the package_search ation with argument include_private=True, to return all his datasets including private ones.\n\n"
+    "- **Search:** If the user is asking about datasets or resources use the package_search ation with argument include_private=True, to return all his datasets including private ones but returning only the ids of the datasets.\n\n"
     "- **Incorporate Documentation Links:** For complex operations or lesser-known features, include links to the official CKAN documentation or user guides. This offers users additional resources to understand and execute the desired tasks effectively.\n\n"
     "By following these guidelines and utilizing your tools effectively, you can provide comprehensive and actionable responses that are enriched with direct links and references, enhancing the overall user experience within the CKAN platform."
 )
-
-
-class CKANUser(BaseModel):
-    id: str
-    name: str
 
 
 def generate_dynamic_model(model_name: str, schema: dict) -> BaseModel:
@@ -109,7 +215,7 @@ def generate_dynamic_model(model_name: str, schema: dict) -> BaseModel:
 
 agent = Agent(
     model=model,
-    deps_type=CKANUser,
+    deps_type=Deps,
     system_prompt=system_prompt,
     retries=3,
 )
@@ -123,11 +229,11 @@ def convert_to_model_messages(history: str) -> List:
     return model_messages
 
 
-def agent_response(user, prompt, history: str):
+def agent_response(prompt, history: str, deps=Deps):
     if not dynamic_models_initialized:
         init_dynamic_models()
     msg_history = convert_to_model_messages(history)
-    return agent.run_sync(user_prompt=prompt, message_history=msg_history, deps=user)
+    return agent.run_sync(user_prompt=prompt, message_history=msg_history, deps=deps,) #usage_limits=UsageLimits(total_tokens_limit=int(deps.max_context_length*0.8)))
 
 
 # --- CKAN Routing and URL Helpers ---
@@ -173,7 +279,7 @@ class RouteModel(BaseModel):
         try:
             url_path = pattern.format(**substitution)
         except KeyError as e:
-            raise ValueError(f"Missing substitution for variable: {e.args[0]}")
+            raise ValueError(f"Missing substitution for variable: {e.args[0]}") from e
         return f"{base_url}{url_path}"
 
     def to_dict(self) -> Dict[str, Any]:
@@ -191,7 +297,16 @@ routes: Dict[str, RouteModel] = {}
 
 
 @agent.tool_plain
-def get_ckan_url_patterns() -> List[RouteModel]:
+def get_ckan_url_patterns(help: bool=True, endpoint: str="") -> RouteModel:
+    """Get CKAN url paterns
+
+    Args:
+        help (bool, optional): if True the function returns a list of endpoint keys instead of a RouteModel, default is True
+        endpoint (str, optional): when set to a valid endpoint key, function returns RouteModel instance. Defaults to "".
+
+    Returns:
+        RouteModel: Route Model with details about the url pattern and its arguments
+    """
     global routes
     if not routes:
         from ckanext.chat.views import global_ckan_app
@@ -204,12 +319,14 @@ def get_ckan_url_patterns() -> List[RouteModel]:
                     methods=sorted(list(rule.methods)),
                 )
                 routes[rule.endpoint] = route
-    return {key: value.to_dict() for key, value in routes.items()}
+    if endpoint in routes.keys():
+        return routes[endpoint].json()
+    if help:
+        return routes.keys()
 
 
 def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
     for key, route in routes.items():
-        print(f"route: {route}")
         if route.endpoint == endpoint:
             # log.debug(f"route: {key}:{route}")
             return route
@@ -232,26 +349,24 @@ def get_function_info(action_key: str) -> dict:
 
 
 @agent.tool
-def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) -> Any:
+def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
     """
     Executes a CKAN action and converts returned entities (in JSON format)
     into dynamic models when possible.
     """
+    user = CKANmodel.User.get(user_reference=ctx.deps.user_id)
     context = {
-        "user": ctx.deps.name,
-        "auth_user_obj": CKANmodel.User.get(
-            user_reference=ctx.deps.id
-        ),  # Full CKAN user object (if available)
+        "user": user.name,
+        "auth_user_obj": user,
         "model": CKANmodel,
         "session": CKANmodel.Session,  # SQLAlchemy session
         "ignore_auth": False,  # Do not bypass authorization checks
     }
     try:
         response = toolkit.get_action(action_name)(context, parameters)
-        log.debug(response)
     except Exception as e:
         return {"error": str(e)}
-    
+
     def unpack_lazy_json(obj):
         if isinstance(obj, dict):
             return {key: unpack_lazy_json(value) for key, value in obj.items()}
@@ -269,7 +384,11 @@ def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) ->
 
             if "resources" in entity:
                 try:
-                    return DynamicDataset(**entity).dict()
+                    log.debug("DynamicDataset")
+                    dataset_dict=DynamicDataset(**entity).model_dump(exclude_unset=True, exclude_defaults=False, exclude_none=True,)
+                    dataset_dict={k: v for k, v in dataset_dict.items() if bool(v)}
+                    log.debug(dataset_dict)
+                    return dataset_dict
                 except ValidationError as validation_error:
                     log.warning(
                         f"Validation error while converting to DynamicDataset: {validation_error.json()}"
@@ -281,7 +400,11 @@ def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) ->
             # If it looks like a resource (has 'package_id' or a 'url'), convert.
             elif "package_id" in entity or "url" in entity:
                 try:
-                    return DynamicResource(**entity).dict()
+                    log.debug("DynamicResource")
+                    resource_dict=DynamicResource(**entity).model_dump(exclude_unset=True, exclude_defaults=False, exclude_none=True,)
+                    resource_dict={k: v for k, v in resource_dict.items() if bool(v)}
+                    log.debug(resource_dict)
+                    return resource_dict
                 except ValidationError as validation_error:
                     log.warning(
                         f"Validation error while converting to DynamicResource: {validation_error.json()}"
@@ -290,14 +413,34 @@ def run_action(ctx: RunContext[CKANUser], action_name: str, parameters: Dict) ->
                 except Exception as ex:
                     log.warning(f"Conversion to DynamicResource failed: {ex}")
                     return entity
+            # For any other dict, iterate over all key-values and recursively convert them.
+            new_entity = {}
+            for key, value in entity.items():
+                if bool(value):
+                    if isinstance(value, list):
+                        new_entity[key] = [convert_entity(item) for item in value if bool(item)]
+                    elif isinstance(value, dict):
+                        new_entity[key] = convert_entity(value)
+                    else:
+                        new_entity[key] = value
+            return new_entity
 
         return entity
-
-    if isinstance(response, list):
-        return [convert_entity(item) for item in response]
-    elif isinstance(response, dict):
-        return convert_entity(response)
-    return response
+    if action_name=="package_search":
+        view_route=find_route_by_endpoint("dataset.read")
+        clean_response=response
+        clean_response['results']=[{"id": result['id'],
+                                    'name': result['name'],
+                                    "view_url": str(view_route.build_url(fill={"id": result["id"]}))
+                                    } for result in response['results']]
+    else:
+        clean_response=clean_json(response)
+    log.debug("{} -> {}".format(len(str(response)),len(str(clean_response))))
+    trunc_out=truncate_by_depth(clean_response,max_depth=5)
+    # trunc_out=output
+    limited_output = truncate_output_by_token(json.dumps(trunc_out,indent=None,separators=(',', ': ')), token_limit=int(ctx.deps.max_context_length*0.1))
+    log.debug("{} -> {}".format(len(str(response)),len(str(limited_output))))
+    return limited_output
 
 
 class FuncSignature(BaseModel):
@@ -305,8 +448,6 @@ class FuncSignature(BaseModel):
 
 
 # --- Dynamic Models for Datasets and Resources ---
-
-
 class DynamicDataset(BaseModel):
     id: str  # CKAN dataset id
 
@@ -341,6 +482,13 @@ class DynamicDataset(BaseModel):
     def from_ckan(cls, package: Package) -> "DynamicDataset":
         data = package.as_dict() if hasattr(package, "as_dict") else package.__dict__
         return cls(**data)
+    
+    # @classmethod
+    # def model_dump(cls, *args, **kwargs):
+    #     data = super().model_dump(cls,*args, **kwargs, exclude_none=True)
+    #     # Filter out empty lists, dictionaries, and the string "null"
+    #     return {k: v for k, v in data.items() if bool(v)}
+    # # filtered_data = {k: v for k, v in data.items() if v not in ([], {}, "", '', "null")}
 
 
 class DynamicResource(BaseModel):
@@ -368,20 +516,39 @@ class DynamicResource(BaseModel):
     @classmethod
     def from_ckan(cls, resource: Resource) -> "DynamicResource":
         data = resource.as_dict() if hasattr(resource, "as_dict") else resource.__dict__
-        return cls(**data)
+        filtered_data = {k: v for k, v in data.items() if v not in ([], {}, "", '', "null")}
+        return cls(**filtered_data)
+
+
+def user_input_to_model_request(input=str) -> ModelRequest:
+    user_prompt = UserPromptPart(content=input)
+    return ModelRequest(
+        parts=[user_prompt],
+        kind="request",
+    )
 
 
 def exception_to_model_response(exc: Exception) -> ModelResponse:
     # For our known exceptions, we pass along the error text
-    if isinstance(exc, (UsageLimitExceeded, ModelRetry, UnexpectedModelBehavior, AgentRunError, ModelHTTPError, FallbackExceptionGroup)):
+    if isinstance(
+        exc,
+        (
+            UsageLimitExceeded,
+            ModelRetry,
+            UnexpectedModelBehavior,
+            AgentRunError,
+            ModelHTTPError,
+            FallbackExceptionGroup,
+        ),
+    ):
         error_text = str(exc)
     else:
         # For all other errors, create a custom message.
         error_text = f"An unexpected error occurred: {type(exc).__name__}: {exc}"
-    
+
     # Create a TextPart that carries the error message.
     error_part = TextPart(content=error_text)
-    
+
     # Construct a ModelResponse using the error part.
     return ModelResponse(
         parts=[error_part],
@@ -389,3 +556,74 @@ def exception_to_model_response(exc: Exception) -> ModelResponse:
         timestamp=datetime.now(timezone.utc),
         kind="response",
     )
+
+
+class VectorMeta(BaseModel):
+    id: int
+    # _vector: List[float]
+    # Auftraggeber: Optional[str] = None
+    # Berichtart: Optional[str] = None
+    # Foerdermittelgeber: Optional[str] = None
+    # Foerdernummer: Optional[str] = None
+    # Foerderprogramm: Optional[str] = None
+    # Projektende: Optional[str] = None
+    # Projektleiter: Optional[str] = None
+    # Projektname: Optional[str] = None
+    # Projektnummer: Optional[str] = None
+    # Projektstart: Optional[str] = None
+    # author: Optional[str] = None
+    chunk_id: Optional[int] = None
+    chunks: Optional[HttpUrl] = None
+    dataset_id: Optional[str] = None
+    dataset_url: Optional[HttpUrl] = None
+    # description: Optional[str] = None
+    groups: Optional[List[str]] = None
+    # owner: Optional[str] = None
+    private: Optional[str] = None
+    resource_id: Optional[str] = None
+    source: Optional[HttpUrl] = None
+    # title: Optional[str] = None
+    view_url: Optional[List[HttpUrl]] = None
+
+
+class RagHit(BaseModel):
+    id: int
+    distance: Optional[float] = None
+    entity: VectorMeta
+
+
+@agent.tool
+async def rag_search(
+    ctx: RunContext[Deps], search_query: List[str], limit: int = 3
+) -> List[RagHit]:
+    """Retrieve documentation sections based on a search query.
+
+    Args:
+        context: The call context.
+        search_query: The search query, can be a list of query strngs.
+        limit: The limit of hits to return.
+    """
+    emb_r = await ctx.deps.openai.embeddings.create(
+        input=search_query, model="text-embedding-3-small", dimensions=ctx.deps.vector_dim
+    )
+    query_vectors = [vec.embedding for vec in emb_r.data]
+    search_res = ctx.deps.milvus_client.search(
+        collection_name=ctx.deps.collection_name,
+        data=query_vectors,
+        search_params={
+            "metric_type": "COSINE",
+            "params": {"level": 1},  # Search parameters
+        },
+        limit=limit,  # Max. number of search results to return
+        # output_fields=["*"], # Fields to return in the search results
+        output_fields=list(VectorMeta.__fields__.keys()),
+        consistency_level="Bounded",
+    )
+    if search_res:
+        hits = []
+        for i in range(len(query_vectors)):
+            hits += [RagHit(**item) for item in search_res[i]]
+        hits = [hit.json() for hit in hits]
+        return hits
+    else:
+        return []
