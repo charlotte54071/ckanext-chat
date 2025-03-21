@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
 import nest_asyncio
+import tiktoken
 from ckan.lib.lazyjson import LazyJSONObject
 
 # Import CKAN models for datasets and resources
@@ -22,7 +23,6 @@ from pydantic import (
     create_model,
     root_validator,
 )
-from pydantic_ai.usage import UsageLimits
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import (
     AgentRunError,
@@ -40,23 +40,33 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
-import tiktoken
 
-def truncate_output_by_token(output: str, token_limit: int, encoding_name="cl100k_base") -> str:
+
+def truncate_output_by_token(
+    output: str, token_limit: int, encoding_name="cl100k_base"
+) -> str:
     encoding = tiktoken.get_encoding(encoding_name)
     tokens = encoding.encode(output)
     if len(tokens) > token_limit:
         truncated_tokens = tokens[:token_limit]
         output = encoding.decode(truncated_tokens)
     return output
+
+
 def truncate_value(value, max_length):
     if isinstance(value, str):
-        return value[:max_length] + '...' if len(value) > max_length else value
+        return value[:max_length] + "..." if len(value) > max_length else value
     elif isinstance(value, list):
         truncated_list = [truncate_value(item, max_length) for item in value]
-        return truncated_list[:max_length] + ['...'] if len(truncated_list) > max_length else truncated_list
+        return (
+            truncated_list[:max_length] + ["..."]
+            if len(truncated_list) > max_length
+            else truncated_list
+        )
     return value
+
 
 def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
     """
@@ -67,34 +77,58 @@ def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
         return placeholder
 
     if isinstance(data, dict):
-        return {key: truncate_by_depth(truncate_value(value,max_length=200), max_depth, current_depth + 1, placeholder)
-                for key, value in data.items()}
+        return {
+            key: truncate_by_depth(
+                truncate_value(value, max_length=200),
+                max_depth,
+                current_depth + 1,
+                placeholder,
+            )
+            for key, value in data.items()
+        }
 
     if isinstance(data, list):
-        data=truncate_value(data,max_length=200)
-        return [truncate_by_depth(item, max_depth, current_depth + 1, placeholder) for item in data]
+        data = truncate_value(data, max_length=200)
+        return [
+            truncate_by_depth(item, max_depth, current_depth + 1, placeholder)
+            for item in data
+        ]
 
     # For any other type (str, int, float, etc.), return the value directly.
     return data
+
+
 def clean_json(data):
     if isinstance(data, dict):
-        return {k: clean_json(v) for k, v in data.items() if clean_json(v) not in ([], {}, '', None)}
+        return {
+            k: clean_json(v)
+            for k, v in data.items()
+            if clean_json(v) not in ([], {}, "", None)
+        }
     elif isinstance(data, list):
-        return [clean_json(item) for item in data if clean_json(item) not in ([], {}, '', None)]
+        return [
+            clean_json(item)
+            for item in data
+            if clean_json(item) not in ([], {}, "", None)
+        ]
     else:
         return data
+
+
 nest_asyncio.apply()
 
 log = __import__("logging").getLogger(__name__)
 
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
-vector_dim=None
+vector_dim = None
 if milvus_url:
     milvus_client = MilvusClient(uri=milvus_url)
     if milvus_client:
         # Get the collection info (schema, etc.)
-        collection_info = milvus_client.describe_collection(collection_name=collection_name)
+        collection_info = milvus_client.describe_collection(
+            collection_name=collection_name
+        )
 
         # Attempt to find the first field that has a 'dim' parameter
         vector_field = None
@@ -105,7 +139,7 @@ if milvus_url:
                 break
         if vector_field:
             vector_dim = vector_field["params"]["dim"]
-            field_name=vector_field["name"]
+            field_name = vector_field["name"]
             log.debug(f"Found vector field: {field_name}")
             log.debug(f"Vector dimension is: {vector_dim}")
         else:
@@ -233,7 +267,13 @@ def agent_response(prompt, history: str, deps=Deps):
     if not dynamic_models_initialized:
         init_dynamic_models()
     msg_history = convert_to_model_messages(history)
-    return agent.run_sync(user_prompt=prompt, message_history=msg_history, deps=deps,) #usage_limits=UsageLimits(total_tokens_limit=int(deps.max_context_length*0.8)))
+    return agent.run_sync(
+        user_prompt=prompt,
+        message_history=msg_history,
+        deps=deps,
+        usage_limits=UsageLimits(total_tokens_limit=None, response_tokens_limit=None),
+        #model_settings={'max_tokens': 400}
+        )
 
 
 # --- CKAN Routing and URL Helpers ---
@@ -297,7 +337,7 @@ routes: Dict[str, RouteModel] = {}
 
 
 @agent.tool_plain
-def get_ckan_url_patterns(help: bool=True, endpoint: str="") -> RouteModel:
+def get_ckan_url_patterns(help: bool = True, endpoint: str = "") -> RouteModel:
     """Get CKAN url paterns
 
     Args:
@@ -322,7 +362,7 @@ def get_ckan_url_patterns(help: bool=True, endpoint: str="") -> RouteModel:
     if endpoint in routes.keys():
         return routes[endpoint].json()
     if help:
-        return routes.keys()
+        return [str(key) for key in routes.keys()]
 
 
 def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
@@ -385,8 +425,12 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
             if "resources" in entity:
                 try:
                     log.debug("DynamicDataset")
-                    dataset_dict=DynamicDataset(**entity).model_dump(exclude_unset=True, exclude_defaults=False, exclude_none=True,)
-                    dataset_dict={k: v for k, v in dataset_dict.items() if bool(v)}
+                    dataset_dict = DynamicDataset(**entity).model_dump(
+                        exclude_unset=True,
+                        exclude_defaults=False,
+                        exclude_none=True,
+                    )
+                    dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
                     log.debug(dataset_dict)
                     return dataset_dict
                 except ValidationError as validation_error:
@@ -401,8 +445,12 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
             elif "package_id" in entity or "url" in entity:
                 try:
                     log.debug("DynamicResource")
-                    resource_dict=DynamicResource(**entity).model_dump(exclude_unset=True, exclude_defaults=False, exclude_none=True,)
-                    resource_dict={k: v for k, v in resource_dict.items() if bool(v)}
+                    resource_dict = DynamicResource(**entity).model_dump(
+                        exclude_unset=True,
+                        exclude_defaults=False,
+                        exclude_none=True,
+                    )
+                    resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
                     log.debug(resource_dict)
                     return resource_dict
                 except ValidationError as validation_error:
@@ -418,7 +466,9 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
             for key, value in entity.items():
                 if bool(value):
                     if isinstance(value, list):
-                        new_entity[key] = [convert_entity(item) for item in value if bool(item)]
+                        new_entity[key] = [
+                            convert_entity(item) for item in value if bool(item)
+                        ]
                     elif isinstance(value, dict):
                         new_entity[key] = convert_entity(value)
                     else:
@@ -426,20 +476,29 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
             return new_entity
 
         return entity
-    if action_name=="package_search":
-        view_route=find_route_by_endpoint("dataset.read")
-        clean_response=response
-        clean_response['results']=[{"id": result['id'],
-                                    'name': result['name'],
-                                    "view_url": str(view_route.build_url(fill={"id": result["id"]}))
-                                    } for result in response['results']]
+
+    if action_name == "package_search":
+        view_route = find_route_by_endpoint("dataset.read")
+        clean_response = response
+        clean_response["results"] = [
+            {
+                "id": result["id"],
+                "name": result["name"],
+                "view_url": str(view_route.build_url(fill={"id": result["id"]})),
+            }
+            for result in response["results"]
+        ]
     else:
-        clean_response=clean_json(response)
-    log.debug("{} -> {}".format(len(str(response)),len(str(clean_response))))
-    trunc_out=truncate_by_depth(clean_response,max_depth=5)
+        clean_response = unpack_lazy_json(response)
+        clean_response = clean_json(clean_response)
+    log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
+    trunc_out = truncate_by_depth(clean_response, max_depth=5)
     # trunc_out=output
-    limited_output = truncate_output_by_token(json.dumps(trunc_out,indent=None,separators=(',', ': ')), token_limit=int(ctx.deps.max_context_length*0.1))
-    log.debug("{} -> {}".format(len(str(response)),len(str(limited_output))))
+    limited_output = truncate_output_by_token(
+        json.dumps(trunc_out, indent=None, separators=(",", ": ")),
+        token_limit=400,#int(ctx.deps.max_context_length * 0.1),
+    )
+    log.debug("{} -> {}".format(len(str(response)), len(str(limited_output))))
     return limited_output
 
 
@@ -482,7 +541,7 @@ class DynamicDataset(BaseModel):
     def from_ckan(cls, package: Package) -> "DynamicDataset":
         data = package.as_dict() if hasattr(package, "as_dict") else package.__dict__
         return cls(**data)
-    
+
     # @classmethod
     # def model_dump(cls, *args, **kwargs):
     #     data = super().model_dump(cls,*args, **kwargs, exclude_none=True)
@@ -516,7 +575,9 @@ class DynamicResource(BaseModel):
     @classmethod
     def from_ckan(cls, resource: Resource) -> "DynamicResource":
         data = resource.as_dict() if hasattr(resource, "as_dict") else resource.__dict__
-        filtered_data = {k: v for k, v in data.items() if v not in ([], {}, "", '', "null")}
+        filtered_data = {
+            k: v for k, v in data.items() if v not in ([], {}, "", "", "null")
+        }
         return cls(**filtered_data)
 
 
@@ -604,7 +665,9 @@ async def rag_search(
         limit: The limit of hits to return.
     """
     emb_r = await ctx.deps.openai.embeddings.create(
-        input=search_query, model="text-embedding-3-small", dimensions=ctx.deps.vector_dim
+        input=search_query,
+        model="text-embedding-3-small",
+        dimensions=ctx.deps.vector_dim,
     )
     query_vectors = [vec.embedding for vec in emb_r.data]
     search_res = ctx.deps.milvus_client.search(
