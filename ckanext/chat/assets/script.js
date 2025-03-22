@@ -80,6 +80,7 @@ ckan.module("chat-module", function ($, _) {
       if (this.options.debug) {
         console.log("Chat module initialized");
       }
+      window.sendMessage = this.sendMessage.bind(this); // Bind sendMessage globally
     },
 
     // Bind all UI events within the module container and globally for sidebar elements
@@ -187,7 +188,6 @@ ckan.module("chat-module", function ($, _) {
       var chatbox = this.el.find("#chatbox");
       var self = this;
 
-      // Helper function to format content (supports objects, arrays, or primitives)
       function formatContent(content) {
         if (typeof content === "object" && content !== null) {
           if (Array.isArray(content)) {
@@ -221,9 +221,7 @@ ckan.module("chat-module", function ($, _) {
       var nonToolParts = [];
 
       message.forEach(function (part, idx) {
-        // Skip system prompts.
         if (part.part_kind === "system-prompt") return;
-        // ignore repeated user prompt when returned by bot
         if (who === "bot" && part.part_kind === "user-prompt") return;
 
         if (
@@ -240,7 +238,6 @@ ckan.module("chat-module", function ($, _) {
         }
       });
 
-      // Process each tool group.
       Object.keys(toolGroups)
         .sort(function (a, b) {
           return toolGroups[a].order - toolGroups[b].order;
@@ -254,7 +251,6 @@ ckan.module("chat-module", function ($, _) {
           var succeeded = false;
 
           group.forEach(function (p) {
-            // Update timestamp if this part's timestamp is newer.
             if (new Date(p.timestamp) > new Date(combinedTimestamp)) {
               combinedTimestamp = p.timestamp;
             }
@@ -262,32 +258,25 @@ ckan.module("chat-module", function ($, _) {
               argumentsContent += "<p>Arguments: " + p.args + "</p>";
             } else if (p.part_kind === "tool-return") {
               succeeded = true;
-              // Use formatContent to handle objects, arrays, or primitives.
               outputContent += "<p>Output:</p>" + formatContent(p.content);
             }
           });
 
           var statusClass = succeeded ? "border-success" : "border-danger";
           var collapseId = "collapse" + groupId;
-          // Check if a card with this collapseId already exists.
           var existingCollapse = chatbox.find("#" + collapseId);
 
           if (existingCollapse.length > 0) {
-            // Update existing card.
             var cardContainer = existingCollapse.closest(".col-auto.card");
-            // Remove old status classes and add the new one.
             cardContainer
               .removeClass("border-danger border-success")
               .addClass(statusClass);
-            // Update the card title with the latest timestamp.
             cardContainer
               .find(".card-title")
               .html("Tool Call: " + toolName + " " + combinedTimestamp);
-            // Append new details to the existing card body.
             var cardBody = existingCollapse.find(".card-body");
             cardBody.append(argumentsContent + outputContent);
           } else {
-            // Create a new card.
             var combinedCardHtml = $(`
               <div class="message bot-message">
                 <span class="col-2 chatavatar"><i class="fas fa-robot"></i></span>
@@ -311,11 +300,10 @@ ckan.module("chat-module", function ($, _) {
           }
         });
 
-      // Process non-tool parts in order.
       nonToolParts.sort(function (a, b) {
         return a.order - b.order;
       });
-      nonToolParts.forEach(function (item) {
+      nonToolParts.forEach(function (item, index) {
         var part = item.part;
         var messageHtml = $(`
           <div class="message ${who === "user" ? "user-message" : "bot-message"}">
@@ -325,10 +313,35 @@ ckan.module("chat-module", function ($, _) {
             </div>
           </div>
         `);
+
+        if (who === "bot") {
+          messageHtml.find("a").each(function () {
+            var link = $(this);
+            var buttonId = `download-btn-${index}`; // Generate a unique ID for each button
+            var downloadButton = $(
+              '<button id="${buttonId}" class="btn download-link-content-btn" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="import file contents to prompt"><i class="fas fa-file-import"></i></button>',
+            );
+
+            downloadButton.on("click", function () {
+              var url = link.attr("href");
+              $.get(url, function (data) {
+                self.el.find("#userInput").val(data); // Paste the content into the textarea
+                $("html, body").animate(
+                  { scrollTop: $(document).height() },
+                  "slow",
+                ); // Scroll to the bottom of the page
+              }).fail(function () {
+                alert("Failed to download content from the URL.");
+              });
+            });
+
+            link.after(downloadButton);
+          });
+        }
+
         chatbox.append(messageHtml);
       });
 
-      // Highlight code blocks and add copy buttons.
       chatbox.find("pre code").each(function () {
         if (!$(this).attr("data-highlighted")) {
           hljs.highlightElement(this);
@@ -337,6 +350,9 @@ ckan.module("chat-module", function ($, _) {
       });
       self.addCopyButtonsToCodeBlocks();
       chatbox.scrollTop(chatbox[0].scrollHeight);
+
+      // Reinitialize tooltips for dynamically added buttons
+      $('[data-bs-toggle="tooltip"]').tooltip();
     },
 
     // Toggle collapsible details for tool messages.

@@ -1,4 +1,4 @@
-# from dotenv import load_dotenv
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -8,10 +8,9 @@ from typing import Any, Dict, List, Optional
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
 import nest_asyncio
+import requests
 import tiktoken
 from ckan.lib.lazyjson import LazyJSONObject
-
-# Import CKAN models for datasets and resources
 from ckan.model.package import Package
 from ckan.model.resource import Resource
 from openai import AsyncAzureOpenAI
@@ -20,7 +19,6 @@ from pydantic import (
     HttpUrl,
     ValidationError,
     computed_field,
-    create_model,
     root_validator,
 )
 from pydantic_ai import Agent, RunContext
@@ -42,6 +40,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
+
+# Allow nested event loops.
+nest_asyncio.apply()
+
+# --------------------- Helper Functions ---------------------
 
 
 def truncate_output_by_token(
@@ -69,13 +72,8 @@ def truncate_value(value, max_length):
 
 
 def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
-    """
-    Recursively traverse the JSON-like structure (dicts and lists)
-    and replace content beyond max_depth with a placeholder.
-    """
     if current_depth >= max_depth:
         return placeholder
-
     if isinstance(data, dict):
         return {
             key: truncate_by_depth(
@@ -86,38 +84,89 @@ def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
             )
             for key, value in data.items()
         }
-
     if isinstance(data, list):
         data = truncate_value(data, max_length=200)
         return [
             truncate_by_depth(item, max_depth, current_depth + 1, placeholder)
             for item in data
         ]
-
-    # For any other type (str, int, float, etc.), return the value directly.
     return data
 
 
-def clean_json(data):
+def unpack_lazy_json(obj):
+    if isinstance(obj, dict):
+        return {key: unpack_lazy_json(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [unpack_lazy_json(item) for item in obj]
+    elif isinstance(obj, LazyJSONObject):
+        return obj.encoded_json
+    return obj
+
+
+def process_entity(data: Any) -> Any:
     if isinstance(data, dict):
-        return {
-            k: clean_json(v)
-            for k, v in data.items()
-            if clean_json(v) not in ([], {}, "", None)
-        }
+        data = unpack_lazy_json(data)
+        if "resources" in data:
+            try:
+                log.debug("DynamicDataset")
+                dataset_dict = DynamicDataset(**data).model_dump(
+                    exclude_unset=True, exclude_defaults=False, exclude_none=True
+                )
+                dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
+                return process_entity(dataset_dict)
+            except ValidationError as validation_error:
+                log.warning(
+                    f"Validation error converting to DynamicDataset: {validation_error.json()}"
+                )
+            except Exception as ex:
+                log.warning(f"Conversion to DynamicDataset failed: {ex}")
+        elif "package_id" in data or "url" in data:
+            try:
+                log.debug("DynamicResource")
+                resource_dict = DynamicResource(**data).model_dump(
+                    exclude_unset=True, exclude_defaults=False, exclude_none=True
+                )
+                resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
+                return process_entity(resource_dict)
+            except ValidationError as validation_error:
+                log.warning(
+                    f"Validation error converting to DynamicResource: {validation_error.json()}"
+                )
+            except Exception as ex:
+                log.warning(f"Conversion to DynamicResource failed: {ex}")
+
+        new_dict = {}
+        for key, value in data.items():
+            processed_value = process_entity(value)
+            if processed_value not in ([], {}, "", None):
+                new_dict[key] = processed_value
+        return new_dict
     elif isinstance(data, list):
-        return [
-            clean_json(item)
-            for item in data
-            if clean_json(item) not in ([], {}, "", None)
-        ]
+        new_list = []
+        for item in data:
+            processed_item = process_entity(item)
+            if processed_item not in ([], {}, "", None):
+                new_list.append(processed_item)
+        return new_list
     else:
         return data
 
 
-nest_asyncio.apply()
+def download_file(url: str, headers: dict, result: dict, verify: bool = True):
+    try:
+        response = requests.get(url, headers=headers, verify=verify, timeout=5)
+        response.raise_for_status()
+        result["content"] = response.text
+        result["error"] = None
+    except Exception as e:
+        result["content"] = None
+        result["error"] = str(e)
 
+
+# --------------------- Logging Setup ---------------------
 log = __import__("logging").getLogger(__name__)
+
+# --------------------- Milvus and CKAN Setup ---------------------
 
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
@@ -125,15 +174,11 @@ vector_dim = None
 if milvus_url:
     milvus_client = MilvusClient(uri=milvus_url)
     if milvus_client:
-        # Get the collection info (schema, etc.)
         collection_info = milvus_client.describe_collection(
             collection_name=collection_name
         )
-
-        # Attempt to find the first field that has a 'dim' parameter
         vector_field = None
         for entry in collection_info["fields"]:
-            # Check if this field is a vector field by verifying if it has a 'dim' parameter
             if "params" in entry.keys() and "dim" in entry["params"].keys():
                 vector_field = entry
                 break
@@ -147,25 +192,10 @@ if milvus_url:
             log.debug("No vector field found in the collection schema.")
     else:
         log.debug("Milvus client not initialized.")
-
 else:
     milvus_client = None
 
-
-@dataclass
-class Deps:
-    user_id: str
-    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
-    openai: AsyncAzureOpenAI = field(default_factory=lambda: azure_client)
-    max_context_length: int = 8192
-    collection_name: str = collection_name
-    vector_dim: int = vector_dim
-
-
-nest_asyncio.apply()
-
-
-_actions = []
+# --------------------- Azure & Agent Setup ---------------------
 
 azure_client = AsyncAzureOpenAI(
     azure_endpoint=toolkit.config.get(
@@ -178,35 +208,39 @@ deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview
 model = OpenAIModel(deployment, openai_client=azure_client)
 
 
-# Global flag to ensure dynamic models are initialized once.
+@dataclass
+class Deps:
+    user_id: str
+    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
+    openai: AsyncAzureOpenAI = field(default_factory=lambda: azure_client)
+    max_context_length: int = 8192
+    collection_name: str = collection_name
+    vector_dim: int = vector_dim
+
+
+# --------------------- Dynamic Models Initialization ---------------------
+
 dynamic_models_initialized = False
 
 
 def init_dynamic_models():
-    """
-    Initialization function to 'warm up' the dynamic models.
-    For now, it simply loads the CKAN URL patterns.
-    (Extend this to fetch a sample Package/Resource if needed.)
-    """
     global dynamic_models_initialized
     if not dynamic_models_initialized:
-        # Initialize routes by calling get_ckan_url_patterns.
         get_ckan_url_patterns()
-        # Optionally fetch a sample package to warm up.
         try:
             package_list = toolkit.get_action("package_list")({}, {})
             if package_list:
                 sample_pkg = toolkit.get_action("package_show")(
                     {}, {"id": package_list[0]}
                 )
-                # Convert the sample package dict to a DynamicDataset.
                 _ = DynamicDataset(**sample_pkg)
         except Exception as e:
             log.warning(f"Could not initialize sample dynamic models: {e}")
         dynamic_models_initialized = True
 
 
-# Define the system prompt for the CKAN agent
+# --------------------- System Prompt & Agent ---------------------
+
 system_prompt = (
     "As a CKAN Agent, you have access to specialized tools that allow you to interact with the CKAN platform effectively. "
     "Your primary functions include retrieving URL patterns, accessing available CKAN actions, obtaining detailed information about specific functions, "
@@ -219,33 +253,22 @@ system_prompt = (
     "- **Usage:** Call this function to obtain the current URL mappings in CKAN.\n\n"
     "2. **List CKAN Actions:**\n"
     "- **Function:** `get_ckan_actions() -> List[str]`\n"
-    "- **Description:** Retrieves a list of all available CKAN action functions. These actions represent the core operations that can be performed within CKAN, such as creating datasets, updating resources, or managing users.\n"
+    "- **Description:** Retrieves a list of all available CKAN action functions.\n"
     "- **Usage:** Use this function to get an overview of the actions you can perform within CKAN.\n\n"
     "3. **Get Function Information:**\n"
     "- **Function:** `get_function_info(action_key: str) -> dict`\n"
-    "- **Description:** Provides detailed information about a specific CKAN action function, including its signature and documentation. This helps in understanding the required parameters and the functionality of the action.\n"
+    "- **Description:** Provides detailed information about a specific CKAN action function, including its signature and documentation.\n"
     "- **Usage:** Invoke this function with the name of the action to get detailed information about it.\n\n"
     "4. **Execute CKAN Action:**\n"
     "- **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "- **Description:** Executes a specified CKAN action with the given parameters. This allows for dynamic interaction with the CKAN backend to perform operations like creating or updating datasets, querying data, or managing organizational details.\n"
-    "- **Usage:** Use this function to perform specific actions within CKAN by providing the action name and necessary parameters.\n\n"
+    "- **Description:** Executes a specified CKAN action with the given parameters.\n"
+    "- **Usage:** Use this function to perform specific actions within CKAN.\n\n"
     "5. **Retrieve documents:**\n"
     "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
-    "- **Description:** Retrieves References to chunks in datasets doing vector search on a list of search strings. Each hit includes details on the dataset_id, the resource with the chunks and simularity metrics. "
-    "- **Usage:** Call this function to obtain chunks of documents related to the users interest. Use the resource_show action on hits to enrich the information before presenting it to the user.\n\n"
-    "**Guidelines for Enhancing Outputs with Useful Links:**\n\n"
-    "- **Utilize URL Patterns:** Leverage the URL patterns retrieved from `get_ckan_url_patterns()` to replace all names of CKAN objects in your response by links to the appropriate CKAN View. For example, use the dataset.read pattern for dataset names.\n\n"
-    "- **Use Of Actions:** Run actions like search and get right away without user confirmation. When suggesting actions or operations that manipulate data, ask for confirmation and reference the corresponding CKAN action functions. Allways prefer patch actions to update actions, because update deletes data not set in the action call.This not only clarifies the steps involved but also guides users on how to perform these actions programmatically.\n\n"
-    "- **Search:** If the user is asking about datasets or resources use the package_search ation with argument include_private=True, to return all his datasets including private ones but returning only the ids of the datasets.\n\n"
-    "- **Incorporate Documentation Links:** For complex operations or lesser-known features, include links to the official CKAN documentation or user guides. This offers users additional resources to understand and execute the desired tasks effectively.\n\n"
-    "By following these guidelines and utilizing your tools effectively, you can provide comprehensive and actionable responses that are enriched with direct links and references, enhancing the overall user experience within the CKAN platform."
+    "- **Description:** Retrieves references to chunks in datasets doing vector search on a list of search strings.\n"
+    "- **Usage:** Call this function to obtain document chunks related to the user’s interest.\n\n"
+    "Follow these guidelines to incorporate useful links and documentation as needed."
 )
-
-
-def generate_dynamic_model(model_name: str, schema: dict) -> BaseModel:
-    fields = {key: (str, None) for key in schema.keys()}
-    return create_model(model_name, **fields)  # type: ignore
-
 
 agent = Agent(
     model=model,
@@ -256,27 +279,28 @@ agent = Agent(
 
 
 def convert_to_model_messages(history: str) -> List:
-    model_messages = None
     if history:
         history_list = json.loads(history)
-        model_messages = ModelMessagesTypeAdapter.validate_python(history_list)
-    return model_messages
+        return ModelMessagesTypeAdapter.validate_python(history_list)
+    return None
 
 
-def agent_response(prompt, history: str, deps=Deps):
+async def async_agent_response(prompt: str, history: str, deps: Deps) -> Any:
     if not dynamic_models_initialized:
         init_dynamic_models()
     msg_history = convert_to_model_messages(history)
-    return agent.run_sync(
+    # Wrap the synchronous run call into a thread so that it can be awaited
+    response = await asyncio.to_thread(
+        agent.run_sync,
         user_prompt=prompt,
         message_history=msg_history,
         deps=deps,
         usage_limits=UsageLimits(total_tokens_limit=None, response_tokens_limit=None),
-        #model_settings={'max_tokens': 400}
-        )
+    )
+    return response
 
 
-# --- CKAN Routing and URL Helpers ---
+# --------------------- CKAN Routing and URL Helpers ---------------------
 
 VARIABLE_REGEX = re.compile(r"<(?:(?P<converter>[^:<>]+):)?(?P<variable>[^<>]+)>")
 
@@ -309,10 +333,10 @@ class RouteModel(BaseModel):
         fill: Optional[Dict[str, Any]] = None,
     ) -> str:
         fill = fill or {}
-        substitution = {}
-        for var in self.variables:
-            var_name = var["variable"]
-            substitution[var_name] = str(fill.get(var_name, f"<{var_name}>"))
+        substitution = {
+            var["variable"]: str(fill.get(var["variable"], f"<{var['variable']}>"))
+            for var in self.variables
+        }
         pattern = self.full_url_pattern
         if base_url.endswith("/") and pattern.startswith("/"):
             base_url = base_url[:-1]
@@ -323,7 +347,6 @@ class RouteModel(BaseModel):
         return f"{base_url}{url_path}"
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert the RouteModel to a dictionary for JSON serialization."""
         return {
             "endpoint": self.endpoint,
             "rule": self.rule,
@@ -338,15 +361,6 @@ routes: Dict[str, RouteModel] = {}
 
 @agent.tool_plain
 def get_ckan_url_patterns(help: bool = True, endpoint: str = "") -> RouteModel:
-    """Get CKAN url paterns
-
-    Args:
-        help (bool, optional): if True the function returns a list of endpoint keys instead of a RouteModel, default is True
-        endpoint (str, optional): when set to a valid endpoint key, function returns RouteModel instance. Defaults to "".
-
-    Returns:
-        RouteModel: Route Model with details about the url pattern and its arguments
-    """
     global routes
     if not routes:
         from ckanext.chat.views import global_ckan_app
@@ -368,7 +382,6 @@ def get_ckan_url_patterns(help: bool = True, endpoint: str = "") -> RouteModel:
 def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
     for key, route in routes.items():
         if route.endpoint == endpoint:
-            # log.debug(f"route: {key}:{route}")
             return route
     return None
 
@@ -390,93 +403,18 @@ def get_function_info(action_key: str) -> dict:
 
 @agent.tool
 def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
-    """
-    Executes a CKAN action and converts returned entities (in JSON format)
-    into dynamic models when possible.
-    """
     user = CKANmodel.User.get(user_reference=ctx.deps.user_id)
     context = {
         "user": user.name,
         "auth_user_obj": user,
         "model": CKANmodel,
-        "session": CKANmodel.Session,  # SQLAlchemy session
-        "ignore_auth": False,  # Do not bypass authorization checks
+        "session": CKANmodel.Session,
+        "ignore_auth": False,
     }
     try:
         response = toolkit.get_action(action_name)(context, parameters)
     except Exception as e:
         return {"error": str(e)}
-
-    def unpack_lazy_json(obj):
-        if isinstance(obj, dict):
-            return {key: unpack_lazy_json(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [unpack_lazy_json(item) for item in obj]
-        elif isinstance(obj, LazyJSONObject):  # Replace with the actual class name
-            return obj.encoded_json  # Unpacking the LazyJSONObject instance
-        return obj
-
-    def convert_entity(entity: Any) -> Any:
-        # If the entity is a dict, try converting to a dynamic model.
-        if isinstance(entity, dict):
-            # If it's likely a dataset (has a 'resources' key), convert accordingly.
-            entity = unpack_lazy_json(entity)  # Unpack LazyJSONObjects first
-
-            if "resources" in entity:
-                try:
-                    log.debug("DynamicDataset")
-                    dataset_dict = DynamicDataset(**entity).model_dump(
-                        exclude_unset=True,
-                        exclude_defaults=False,
-                        exclude_none=True,
-                    )
-                    dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
-                    log.debug(dataset_dict)
-                    return dataset_dict
-                except ValidationError as validation_error:
-                    log.warning(
-                        f"Validation error while converting to DynamicDataset: {validation_error.json()}"
-                    )
-                    return entity
-                except Exception as ex:
-                    log.warning(f"Conversion to DynamicDataset failed: {ex}")
-                    return entity
-            # If it looks like a resource (has 'package_id' or a 'url'), convert.
-            elif "package_id" in entity or "url" in entity:
-                try:
-                    log.debug("DynamicResource")
-                    resource_dict = DynamicResource(**entity).model_dump(
-                        exclude_unset=True,
-                        exclude_defaults=False,
-                        exclude_none=True,
-                    )
-                    resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
-                    log.debug(resource_dict)
-                    return resource_dict
-                except ValidationError as validation_error:
-                    log.warning(
-                        f"Validation error while converting to DynamicResource: {validation_error.json()}"
-                    )
-                    return entity
-                except Exception as ex:
-                    log.warning(f"Conversion to DynamicResource failed: {ex}")
-                    return entity
-            # For any other dict, iterate over all key-values and recursively convert them.
-            new_entity = {}
-            for key, value in entity.items():
-                if bool(value):
-                    if isinstance(value, list):
-                        new_entity[key] = [
-                            convert_entity(item) for item in value if bool(item)
-                        ]
-                    elif isinstance(value, dict):
-                        new_entity[key] = convert_entity(value)
-                    else:
-                        new_entity[key] = value
-            return new_entity
-
-        return entity
-
     if action_name == "package_search":
         view_route = find_route_by_endpoint("dataset.read")
         clean_response = response
@@ -490,30 +428,24 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
         ]
     else:
         clean_response = unpack_lazy_json(response)
-        clean_response = clean_json(clean_response)
+        clean_response = process_entity(clean_response)
     log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
-    trunc_out = truncate_by_depth(clean_response, max_depth=5)
-    # trunc_out=output
-    limited_output = truncate_output_by_token(
-        json.dumps(trunc_out, indent=None, separators=(",", ": ")),
-        token_limit=400,#int(ctx.deps.max_context_length * 0.1),
-    )
-    log.debug("{} -> {}".format(len(str(response)), len(str(limited_output))))
-    return limited_output
+    return clean_response
 
 
 class FuncSignature(BaseModel):
     doc: Any
 
 
-# --- Dynamic Models for Datasets and Resources ---
+# --------------------- Dynamic Models ---------------------
+
+
 class DynamicDataset(BaseModel):
     id: str  # CKAN dataset id
+    view_url: Optional[str] = None
 
     class Config:
         extra = "allow"
-
-    view_url: Optional[str] = None
 
     @root_validator(pre=True)
     def calculate_computed_field(cls, values):
@@ -525,15 +457,7 @@ class DynamicDataset(BaseModel):
             raise ValueError(
                 'Input should have a "resources" key with a list of resources.'
             )
-
-        # Validate each resource entry
-        validated_resources = []
-        for resource in resources:
-            validated_resource = DynamicResource(
-                **resource
-            )  # Validate and create instance
-            validated_resources.append(validated_resource)
-
+        validated_resources = [DynamicResource(**resource) for resource in resources]
         values["resources"] = validated_resources
         return values
 
@@ -541,13 +465,6 @@ class DynamicDataset(BaseModel):
     def from_ckan(cls, package: Package) -> "DynamicDataset":
         data = package.as_dict() if hasattr(package, "as_dict") else package.__dict__
         return cls(**data)
-
-    # @classmethod
-    # def model_dump(cls, *args, **kwargs):
-    #     data = super().model_dump(cls,*args, **kwargs, exclude_none=True)
-    #     # Filter out empty lists, dictionaries, and the string "null"
-    #     return {k: v for k, v in data.items() if bool(v)}
-    # # filtered_data = {k: v for k, v in data.items() if v not in ([], {}, "", '', "null")}
 
 
 class DynamicResource(BaseModel):
@@ -581,16 +498,12 @@ class DynamicResource(BaseModel):
         return cls(**filtered_data)
 
 
-def user_input_to_model_request(input=str) -> ModelRequest:
-    user_prompt = UserPromptPart(content=input)
-    return ModelRequest(
-        parts=[user_prompt],
-        kind="request",
-    )
+def user_input_to_model_request(input_str: str) -> ModelRequest:
+    user_prompt = UserPromptPart(content=input_str)
+    return ModelRequest(parts=[user_prompt], kind="request")
 
 
 def exception_to_model_response(exc: Exception) -> ModelResponse:
-    # For our known exceptions, we pass along the error text
     if isinstance(
         exc,
         (
@@ -604,46 +517,29 @@ def exception_to_model_response(exc: Exception) -> ModelResponse:
     ):
         error_text = str(exc)
     else:
-        # For all other errors, create a custom message.
         error_text = f"An unexpected error occurred: {type(exc).__name__}: {exc}"
-
-    # Create a TextPart that carries the error message.
     error_part = TextPart(content=error_text)
-
-    # Construct a ModelResponse using the error part.
     return ModelResponse(
         parts=[error_part],
-        model_name="pydanticai",  # Or your specific model identifier
+        model_name="pydanticai",
         timestamp=datetime.now(timezone.utc),
         kind="response",
     )
 
 
+# --------------------- Vector & RAG Models ---------------------
+
+
 class VectorMeta(BaseModel):
     id: int
-    # _vector: List[float]
-    # Auftraggeber: Optional[str] = None
-    # Berichtart: Optional[str] = None
-    # Foerdermittelgeber: Optional[str] = None
-    # Foerdernummer: Optional[str] = None
-    # Foerderprogramm: Optional[str] = None
-    # Projektende: Optional[str] = None
-    # Projektleiter: Optional[str] = None
-    # Projektname: Optional[str] = None
-    # Projektnummer: Optional[str] = None
-    # Projektstart: Optional[str] = None
-    # author: Optional[str] = None
     chunk_id: Optional[int] = None
     chunks: Optional[HttpUrl] = None
     dataset_id: Optional[str] = None
     dataset_url: Optional[HttpUrl] = None
-    # description: Optional[str] = None
     groups: Optional[List[str]] = None
-    # owner: Optional[str] = None
     private: Optional[str] = None
     resource_id: Optional[str] = None
     source: Optional[HttpUrl] = None
-    # title: Optional[str] = None
     view_url: Optional[List[HttpUrl]] = None
 
 
@@ -657,13 +553,6 @@ class RagHit(BaseModel):
 async def rag_search(
     ctx: RunContext[Deps], search_query: List[str], limit: int = 3
 ) -> List[RagHit]:
-    """Retrieve documentation sections based on a search query.
-
-    Args:
-        context: The call context.
-        search_query: The search query, can be a list of query strngs.
-        limit: The limit of hits to return.
-    """
     emb_r = await ctx.deps.openai.embeddings.create(
         input=search_query,
         model="text-embedding-3-small",
@@ -673,12 +562,8 @@ async def rag_search(
     search_res = ctx.deps.milvus_client.search(
         collection_name=ctx.deps.collection_name,
         data=query_vectors,
-        search_params={
-            "metric_type": "COSINE",
-            "params": {"level": 1},  # Search parameters
-        },
-        limit=limit,  # Max. number of search results to return
-        # output_fields=["*"], # Fields to return in the search results
+        search_params={"metric_type": "COSINE", "params": {"level": 1}},
+        limit=limit,
         output_fields=list(VectorMeta.__fields__.keys()),
         consistency_level="Bounded",
     )
@@ -686,7 +571,26 @@ async def rag_search(
         hits = []
         for i in range(len(query_vectors)):
             hits += [RagHit(**item) for item in search_res[i]]
-        hits = [hit.json() for hit in hits]
-        return hits
+        return [hit.json() for hit in hits]
     else:
         return []
+
+
+def get_user_token(user_id: str) -> Optional[str]:
+    user = CKANmodel.User.get(user_reference=user_id)
+    context = {
+        "user": user.name,
+        "auth_user_obj": user,
+        "model": CKANmodel,
+        "session": CKANmodel.Session,
+        "ignore_auth": False,
+    }
+    parameters = {"user": user.name, "name": "chat_agent"}
+    try:
+        response = toolkit.get_action("api_token_create")(context, parameters)
+    except Exception as e:
+        return e
+    if "token" in response.keys():
+        token = response["token"].decode("utf-8")
+        return token
+    return None

@@ -4,10 +4,11 @@ import ckan.plugins.toolkit as toolkit
 from ckan.common import _, current_user
 from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
+import asyncio
 
 from ckanext.chat.bot.agent import (
     Deps,
-    agent_response,
+    async_agent_response,
     exception_to_model_response,
     user_input_to_model_request,
 )
@@ -51,7 +52,6 @@ class ChatView(MethodView):
             },
         )
 
-
 def ask():
     user_input = request.form.get("text")
     history = request.form.get("history", "")
@@ -65,9 +65,11 @@ def ask():
     # log.debug(user)
     while attempt < max_retries:
         try:
-            response = agent_response(user_input, history, deps=deps)
+            response = asyncio.run(async_agent_response(user_input, history, deps=deps))
             # Now response is guaranteed to have new_messages() if no exception occurred.
-            return jsonify({"response": response.new_messages()})
+            # Ensure new_messages() is awaited in the sync wrapper if it's async
+            messages = response.new_messages()
+            return jsonify({"response": messages})
         except Exception as e:
             user_promt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
