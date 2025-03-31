@@ -1,10 +1,11 @@
+import asyncio
+
 import ckan.lib.base as base
 import ckan.lib.helpers as core_helpers
 import ckan.plugins.toolkit as toolkit
 from ckan.common import _, current_user
 from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
-import asyncio
 
 from ckanext.chat.bot.agent import (
     Deps,
@@ -51,6 +52,7 @@ class ChatView(MethodView):
                 "api_endpoint": toolkit.config.get("ckanext.chat.completion_url"),
             },
         )
+
 
 def ask():
     user_input = request.form.get("text")

@@ -8,6 +8,9 @@ ckan.module("chat-module", function ($, _) {
     if (Array.isArray(content)) {
       cleanHtml = content
         .map(function (item) {
+          if (typeof item === 'object' && item !== null) {
+            console.log('The item is of type object:', item);
+          };
           var rawHtml = marked.parse(item);
           return DOMPurify.sanitize(rawHtml, {
             ALLOWED_TAGS: [
@@ -224,10 +227,7 @@ ckan.module("chat-module", function ($, _) {
         if (part.part_kind === "system-prompt") return;
         if (who === "bot" && part.part_kind === "user-prompt") return;
 
-        if (
-          part.part_kind === "tool-call" ||
-          part.part_kind === "tool-return"
-        ) {
+        if (["tool-call", "tool-return", "retry-prompt"].includes(part.part_kind)) {
           var id = part.tool_call_id;
           if (!toolGroups[id]) {
             toolGroups[id] = { parts: [], order: idx };

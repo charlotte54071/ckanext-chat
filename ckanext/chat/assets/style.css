@@ -7,6 +7,14 @@
   padding: 20px;
 }
 
+#userInput {
+  color: var(--bs-body-color);
+}
+#userInput:focus {
+  border: none; /* Removes the border */
+  outline: none; /* Removes the outline if present */
+}
+
 #chatList {
   padding: 15px;
   border-right: 1px solid #ddd;
@@ -96,10 +104,6 @@
   margin-right: 10px;
 }
 
-#userInput:focus {
-  border: none; /* Removes the border */
-  outline: none; /* Removes the outline if present */
-}
 .user-message .chatavatar {
   background-color: rgba(
     var(--bs-primary-rgb),

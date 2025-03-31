@@ -1,6 +1,6 @@
 import asyncio
 import json
-import re
+import re, os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -48,13 +48,16 @@ nest_asyncio.apply()
 
 
 def truncate_output_by_token(
-    output: str, token_limit: int, encoding_name="cl100k_base"
+    output: str, token_limit: int, skip_tokens: int = 0, encoding_name="cl100k_base"
 ) -> str:
     encoding = tiktoken.get_encoding(encoding_name)
     tokens = encoding.encode(output)
+    
     if len(tokens) > token_limit:
-        truncated_tokens = tokens[:token_limit]
+        # Skip the specified number of tokens
+        truncated_tokens = tokens[skip_tokens:skip_tokens + token_limit]
         output = encoding.decode(truncated_tokens)
+    
     return output
 
 
@@ -152,15 +155,13 @@ def process_entity(data: Any) -> Any:
         return data
 
 
-def download_file(url: str, headers: dict, result: dict, verify: bool = True):
+def download_file(url: str, headers: dict={}, verify: bool = True):
     try:
         response = requests.get(url, headers=headers, verify=verify, timeout=5)
         response.raise_for_status()
-        result["content"] = response.text
-        result["error"] = None
+        return response.text
     except Exception as e:
-        result["content"] = None
-        result["error"] = str(e)
+        return str(e)
 
 
 # --------------------- Logging Setup ---------------------
@@ -263,10 +264,15 @@ system_prompt = (
     "- **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
     "- **Description:** Executes a specified CKAN action with the given parameters.\n"
     "- **Usage:** Use this function to perform specific actions within CKAN.\n\n"
-    "5. **Retrieve documents:**\n"
+    "5. **Download Resources Contents:**\n"
+    "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
+    "- **Description:** Returns the file content string of a given resource.\n"
+    "- **Usage:** Use this function retrieve file contents of CKAN or external content. Use skip_tokens and max_token_length to fetch a chunk of the content as needed.\n\n"
+    "6. **Retrieve documents:**\n"
     "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
     "- **Description:** Retrieves references to chunks in datasets doing vector search on a list of search strings.\n"
-    "- **Usage:** Call this function to obtain document chunks related to the user’s interest.\n\n"
+    "- **Usage:** Call this function to hits on document chunks related to the user’s interest.Use get_resource_file_contents tool to retrieve the contents of the documents related to the hits for in depth context.\n\n" \
+    "  If the function returns an error that the milvus client is not set up, use the package_search action instead."
     "Follow these guidelines to incorporate useful links and documentation as needed."
 )
 
@@ -432,6 +438,42 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 
+@agent.tool_plain
+def get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str:
+    """Retrieves the content of a resource stored in filetore, allows setting max token of output and skip tokens to extract a chunk
+
+    Args:
+        resource_id (str): The UUID of the CKAN resource
+        resource_url (str): The download url of the CKAN resource
+        max_token_length (int): the maximum length of the string to return 
+        skip_tokens (int): ommits the token length given from start of the contents, to retrieve a chunk
+    Returns:
+        str: the content of the file retrieved
+    """
+    ckan_url=toolkit.config.get("ckan.site_url")
+    if ckan_url in resource_url:
+        storage_path=toolkit.config.get('ckan.storage_path',"/var/lib/ckan/default")
+        # Generate the folder structure based on the resource_id
+        first_level_folder = resource_id[:3]
+        second_level_folder = resource_id[3:6]
+        file_name = resource_id[6:]
+
+        # Construct the full file path
+        file_path = os.path.join(storage_path, 'resources', first_level_folder, second_level_folder, file_name)
+        log.debug(file_path)
+        # Read and return the file contents
+        try:
+            with open(file_path, 'r') as file:
+                contents = file.read()
+            return truncate_output_by_token(contents,token_limit=max_token_length,skip_tokens=skip_tokens)
+        except FileNotFoundError:
+            return "File not found."
+        except Exception as e:
+            return str(e)
+    else:
+        return truncate_output_by_token(download_file(resource_url,verify=ssl_verify),token_limit=max_token_length,skip_tokens=skip_tokens)
+
+
 
 class FuncSignature(BaseModel):
     doc: Any
@@ -553,6 +595,8 @@ class RagHit(BaseModel):
 async def rag_search(
     ctx: RunContext[Deps], search_query: List[str], limit: int = 3
 ) -> List[RagHit]:
+    if not ctx.deps.milvus_client:
+        return "The Milvus Client was not setup properly, no rag_serach supported in the moment."
     emb_r = await ctx.deps.openai.embeddings.create(
         input=search_query,
         model="text-embedding-3-small",
