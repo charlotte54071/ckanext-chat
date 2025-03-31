@@ -37,8 +37,8 @@
 }
 
 #chatList .list-group-item.active {
-  background-color: #007bff;
-  color: white;
+  background-color: var(--bs-primary);
+  color: var(--bs-light);
 }
 
 #chatList .actions {

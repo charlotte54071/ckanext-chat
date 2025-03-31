@@ -158,6 +158,11 @@ ckan.module("chat-module", function ($, _) {
         var chat = chats[index];
         var messagesDiv = this.el.find("#chatbox");
         messagesDiv.empty();
+        
+        // Highlight the active chat
+        $("#chatList li").removeClass("active"); // Remove active class from all
+        $("#chatList li").eq(index).addClass("active"); // Add active class to the selected chat
+    
         var self = this;
         chat.messages.forEach(function (msg) {
           if (msg.kind === "request") {
@@ -604,8 +609,12 @@ ckan.module("chat-module", function ($, _) {
       localStorage.setItem("previousChats", JSON.stringify(chats));
       this.el.find("#chatbox").empty();
       this.el.find("#userInput").val("");
+      
+      // Highlight the new chat as active
       this.currentChatLabel = "Current Chat";
       this.loadPreviousChats();
+      $("#chatList li").removeClass("active"); // Remove active class from all
+      $("#chatList li").last().addClass("active"); // Add active class to the new chat
     },
   };
 });
