@@ -38,6 +38,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 
@@ -198,6 +199,7 @@ else:
 
 # --------------------- Azure & Agent Setup ---------------------
 
+#Azure Setup
 azure_client = AsyncAzureOpenAI(
     azure_endpoint=toolkit.config.get(
         "ckanext.chat.completion_url", "https://your.chat.api"
@@ -206,14 +208,20 @@ azure_client = AsyncAzureOpenAI(
     api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
 )
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
-model = OpenAIModel(deployment, openai_client=azure_client)
+model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
+
+#Ollama setup
+# model = OpenAIModel(
+#     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
+#     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
+# )
 
 
 @dataclass
 class Deps:
     user_id: str
     milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
-    openai: AsyncAzureOpenAI = field(default_factory=lambda: azure_client)
+    openai: OpenAIModel = field(default_factory=lambda: model)
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
@@ -241,40 +249,44 @@ def init_dynamic_models():
 
 
 # --------------------- System Prompt & Agent ---------------------
-
 system_prompt = (
-    "As a CKAN Agent, you have access to specialized tools that allow you to interact with the CKAN platform effectively. "
-    "Your primary functions include retrieving URL patterns, accessing available CKAN actions, obtaining detailed information about specific functions, "
-    "and executing CKAN actions with specified parameters. Here's a detailed overview of your capabilities:\n\n"
-    "**Available Tools:**\n\n"
-    "1. **Retrieve CKAN URL Patterns:**\n"
-    "- **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
-    "- **Description:** Fetches a list of URL patterns defined in the CKAN application. Each pattern includes details such as the endpoint, URL rule, and allowed HTTP methods. "
-    "This information is crucial for understanding the available routes within the CKAN application and can be used to generate useful links.\n"
-    "- **Usage:** Call this function to obtain the current URL mappings in CKAN.\n\n"
-    "2. **List CKAN Actions:**\n"
+    "Key Guidelines:\n\n"
+    "- You *must* use `get_action_info` on any action you want to run to understand the action dand its arguments.\n"
+    "- For update or patch operations, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
+    "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
+    "- For general dataset searches and overviews, prioritize using `package_search`. Run the package_search action with an empty query to fetch all datasets.\n"
+    "- For more detailed document searches, try `rag_search` first; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
+    "- Ensure you select the appropriate tool based on the user's request and the available capabilities.\n\n"
+    "Your Toolset:\n\n"
+    "1. **List CKAN Actions:**\n"
     "- **Function:** `get_ckan_actions() -> List[str]`\n"
-    "- **Description:** Retrieves a list of all available CKAN action functions.\n"
-    "- **Usage:** Use this function to get an overview of the actions you can perform within CKAN.\n\n"
-    "3. **Get Function Information:**\n"
-    "- **Function:** `get_function_info(action_key: str) -> dict`\n"
-    "- **Description:** Provides detailed information about a specific CKAN action function, including its signature and documentation.\n"
-    "- **Usage:** Invoke this function with the name of the action to get detailed information about it.\n\n"
-    "4. **Execute CKAN Action:**\n"
+    "- **Purpose:** Retrieves a complete list of available CKAN action functions.\n"
+    "- **When to Use:** When you need an overview of potential actions.\n\n"
+    "2. **Get Function Information:**\n"
+    "- **Function:** `get_action_info(action_key: str) -> dict`\n"
+    "- **Purpose:** Provides detailed information (signature and documentation) for a specified CKAN action.\n"
+    "- **When to Use:** Always use this first before executing any action.\n\n"
+    "3. **Execute CKAN Action:**\n"
     "- **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "- **Description:** Executes a specified CKAN action with the given parameters.\n"
-    "- **Usage:** Use this function to perform specific actions within CKAN.\n\n"
-    "5. **Download Resources Contents:**\n"
+    "- **Purpose:** Executes a specified CKAN action with provided parameters.\n"
+    "- **When to Use:** When a user's request requires running an action within CKAN. For update or patch actions, present the proposed changes to the user and obtain confirmation before executing.\n\n"
+    "4. **Retrieve CKAN URL Patterns:**\n"
+    "- **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
+    "- **Purpose:** Fetches all URL patterns in CKAN, including endpoints, URL rules, and allowed HTTP methods.\n"
+    "- **When to Use:** When you need an overview of the available routes. Use it to enhance ur output by creating links.\n\n"
+    "5. **Download Resource Contents:**\n"
     "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
-    "- **Description:** Returns the file content string of a given resource.\n"
-    "- **Usage:** Use this function retrieve file contents of CKAN or external content. Use skip_tokens and max_token_length to fetch a chunk of the content as needed.\n\n"
-    "6. **Retrieve documents:**\n"
+    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
+    "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
+    "6. **Retrieve Documents:**\n"
     "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
-    "- **Description:** Retrieves references to chunks in datasets doing vector search on a list of search strings.\n"
-    "- **Usage:** Call this function to hits on document chunks related to the user’s interest.Use get_resource_file_contents tool to retrieve the contents of the documents related to the hits for in depth context.\n\n" \
-    "  If the function returns an error that the milvus client is not set up, use the package_search action instead."
-    "Follow these guidelines to incorporate useful links and documentation as needed."
+    "- **Purpose:** Performs a vector search on document chunks using a list of search strings.\n"
+    "- **When to Use:**\n"
+    "   - For in-depth document searches.\n"
+    "   - If `rag_search` indicates that the milvus client is not set up, then use `package_search` instead.\n"
+    "   - For general dataset searches or overviews, prefer `package_search`.\n"
 )
+
 
 agent = Agent(
     model=model,
@@ -400,7 +412,15 @@ def get_ckan_actions() -> List[str]:
 
 
 @agent.tool_plain
-def get_function_info(action_key: str) -> dict:
+def get_action_info(action_key: str) -> dict:
+    """Get the doc string of an action
+
+    Args:
+        action_key (str): the str the acton is named after
+
+    Returns:
+        dict: a dictionary containing the doc string and the arguments definitions needed to run the action
+    """
     from ckan.logic.action.get import help_show
 
     func_model = FuncSignature(doc=help_show({}, {"name": action_key}))

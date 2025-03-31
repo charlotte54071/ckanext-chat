@@ -233,6 +233,7 @@ ckan.module("chat-module", function ($, _) {
         if (who === "bot" && part.part_kind === "user-prompt") return;
 
         if (["tool-call", "tool-return", "retry-prompt"].includes(part.part_kind)) {
+          console.log(part.tool_call_id)
           var id = part.tool_call_id;
           if (!toolGroups[id]) {
             toolGroups[id] = { parts: [], order: idx };

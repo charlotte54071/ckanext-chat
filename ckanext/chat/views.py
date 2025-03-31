@@ -53,6 +53,12 @@ class ChatView(MethodView):
             },
         )
 
+from pydantic_ai.messages import TextPart, ModelMessage
+
+# Assuming 'response' is an instance of ModelResponse
+
+# Proceed with processing 'filtered_parts'
+
 
 def ask():
     user_input = request.form.get("text")
@@ -71,6 +77,8 @@ def ask():
             # Now response is guaranteed to have new_messages() if no exception occurred.
             # Ensure new_messages() is awaited in the sync wrapper if it's async
             messages = response.new_messages()
+            #remove empty text responses parts
+            [[ message.parts.remove(part) for part in message.parts if isinstance(part, TextPart) and part.content==""] for message in messages]
             return jsonify({"response": messages})
         except Exception as e:
             user_promt = user_input_to_model_request(user_input)

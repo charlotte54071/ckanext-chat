@@ -1,4 +1,4 @@
-pydantic-ai-slim[openai,logfire]==0.0.28
+pydantic-ai-slim[openai,logfire]==0.0.47
 openai
 logfire[httpx]
 nest_asyncio
