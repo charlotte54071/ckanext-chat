@@ -1,17 +1,18 @@
-import logging
+import asyncio
 
 import ckan.lib.base as base
 import ckan.lib.helpers as core_helpers
 import ckan.plugins.toolkit as toolkit
 from ckan.common import _, current_user
-from flask import Blueprint, current_app, flash, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
-from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
-                                    ModelHTTPError, ModelRetry,
-                                    UnexpectedModelBehavior,
-                                    UsageLimitExceeded)
 
-from ckanext.chat.bot.agent import agent_response, exception_to_model_response
+from ckanext.chat.bot.agent import (
+    Deps,
+    async_agent_response,
+    exception_to_model_response,
+    user_input_to_model_request,
+)
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
@@ -52,8 +53,11 @@ class ChatView(MethodView):
             },
         )
 
+from pydantic_ai.messages import TextPart, ModelMessage
 
-from ckanext.chat.bot.agent import CKANUser
+# Assuming 'response' is an instance of ModelResponse
+
+# Proceed with processing 'filtered_parts'
 
 
 def ask():
@@ -64,19 +68,24 @@ def ask():
     tkuser = toolkit.current_user
     # If they're not a logged in user, don't allow them to see content
     if tkuser.name is None:
-        return {'success': False,
-                'msg': 'Must be logged in to view site'}
-    user = CKANUser(id=tkuser.id, name=tkuser.name)
-    log.debug(user)
+        return {"success": False, "msg": "Must be logged in to view site"}
+    deps = Deps(user_id=tkuser.id)
+    # log.debug(user)
     while attempt < max_retries:
         try:
-            response = agent_response(user, user_input, history)
+            response = asyncio.run(async_agent_response(user_input, history, deps=deps))
             # Now response is guaranteed to have new_messages() if no exception occurred.
-            return jsonify({"response": response.new_messages()})
+            # Ensure new_messages() is awaited in the sync wrapper if it's async
+            messages = response.new_messages()
+            #remove empty text responses parts
+            [[ message.parts.remove(part) for part in message.parts if isinstance(part, TextPart) and part.content==""] for message in messages]
+            return jsonify({"response": messages})
         except Exception as e:
+            user_promt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
             log.error(error_response)
-            return jsonify({"response": [error_response,]})
+            return jsonify({"response": [user_promt, error_response]})
+
 
 blueprint.add_url_rule(
     "/chat",

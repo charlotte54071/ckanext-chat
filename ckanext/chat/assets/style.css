@@ -7,6 +7,14 @@
   padding: 20px;
 }
 
+#userInput {
+  color: var(--bs-body-color);
+}
+#userInput:focus {
+  border: none; /* Removes the border */
+  outline: none; /* Removes the outline if present */
+}
+
 #chatList {
   padding: 15px;
   border-right: 1px solid #ddd;
@@ -29,8 +37,8 @@
 }
 
 #chatList .list-group-item.active {
-  background-color: #007bff;
-  color: white;
+  background-color: var(--bs-primary);
+  color: var(--bs-light);
 }
 
 #chatList .actions {
@@ -61,20 +69,20 @@
   padding: 10px;
 }
 
-#chat-input input[type=text] {
+#chat-input input[type="text"] {
   flex-grow: 1;
   padding: 5px;
   margin-right: 5px;
 }
 #composer-background {
-  border-radius: 1.0rem !important;
+  border-radius: 1rem !important;
 }
 
 #chat-input button {
   padding: 5px 10px;
 }
 
-#chat-input input[type=file] {
+#chat-input input[type="file"] {
   margin-right: 5px;
 }
 
@@ -96,29 +104,31 @@
   margin-right: 10px;
 }
 
-#userInput:focus {
-  border: none; /* Removes the border */
-  outline: none; /* Removes the outline if present */
-}
 .user-message .chatavatar {
-  background-color: rgba(var(--bs-primary-rgb),1.0); /* Replace with the actual color */
-  color:var(--bs-body-bg);
+  background-color: rgba(
+    var(--bs-primary-rgb),
+    1
+  ); /* Replace with the actual color */
+  color: var(--bs-body-bg);
 }
 
 .user-message .text {
-  background-color:  rgba(var(--bs-primary-rgb),0.5);
+  background-color: rgba(var(--bs-primary-rgb), 0.5);
   padding: 10px;
   border-radius: 10px;
   max-width: 90%;
 }
 
 .bot-message .chatavatar {
-  background-color: rgba(var(--bs-secondary-rgb),1.0); /* Replace with the actual color */
-  color:var(--bs-body-bg);
+  background-color: rgba(
+    var(--bs-secondary-rgb),
+    1
+  ); /* Replace with the actual color */
+  color: var(--bs-body-bg);
 }
 
 .bot-message .text {
-  background-color:  rgba(var(--bs-secondary-rgb),0.5); /* Slightly darker */
+  background-color: rgba(var(--bs-secondary-rgb), 0.5); /* Slightly darker */
   padding: 10px;
   border-radius: 10px;
   max-width: 90%;
