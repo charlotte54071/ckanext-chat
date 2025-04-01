@@ -1,6 +1,7 @@
 import asyncio
 import json
-import re, os
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -53,12 +54,12 @@ def truncate_output_by_token(
 ) -> str:
     encoding = tiktoken.get_encoding(encoding_name)
     tokens = encoding.encode(output)
-    
+
     if len(tokens) > token_limit:
         # Skip the specified number of tokens
-        truncated_tokens = tokens[skip_tokens:skip_tokens + token_limit]
+        truncated_tokens = tokens[skip_tokens : skip_tokens + token_limit]
         output = encoding.decode(truncated_tokens)
-    
+
     return output
 
 
@@ -156,7 +157,7 @@ def process_entity(data: Any) -> Any:
         return data
 
 
-def download_file(url: str, headers: dict={}, verify: bool = True):
+def download_file(url: str, headers: dict = None, verify: bool = True):
     try:
         response = requests.get(url, headers=headers, verify=verify, timeout=5)
         response.raise_for_status()
@@ -199,7 +200,7 @@ else:
 
 # --------------------- Azure & Agent Setup ---------------------
 
-#Azure Setup
+# Azure Setup
 azure_client = AsyncAzureOpenAI(
     azure_endpoint=toolkit.config.get(
         "ckanext.chat.completion_url", "https://your.chat.api"
@@ -210,7 +211,7 @@ azure_client = AsyncAzureOpenAI(
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
 model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
-#Ollama setup
+# Ollama setup
 # model = OpenAIModel(
 #     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
 #     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
@@ -402,7 +403,7 @@ def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
     if endpoint and endpoint in routes.keys():
         return routes[endpoint].json()
     else:
-        endpoints=[str(key) for key in routes.keys()]
+        endpoints = [str(key) for key in routes.keys()]
         return f"route endpoint not found. List of endpoints: {endpoints}"
 
 
@@ -466,41 +467,59 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 
+
 @agent.tool_plain
-def get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str:
+def get_resource_file_contents(
+    resource_id: str,
+    resource_url: str,
+    max_token_length: int,
+    skip_tokens: int = 0,
+    ssl_verify=True,
+) -> str:
     """Retrieves the content of a resource stored in filetore, allows setting max token of output and skip tokens to extract a chunk
 
     Args:
         resource_id (str): The UUID of the CKAN resource
         resource_url (str): The download url of the CKAN resource
-        max_token_length (int): the maximum length of the string to return 
+        max_token_length (int): the maximum length of the string to return
         skip_tokens (int): ommits the token length given from start of the contents, to retrieve a chunk
     Returns:
         str: the content of the file retrieved
     """
-    ckan_url=toolkit.config.get("ckan.site_url")
+    ckan_url = toolkit.config.get("ckan.site_url")
     if ckan_url in resource_url:
-        storage_path=toolkit.config.get('ckan.storage_path',"/var/lib/ckan/default")
+        storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
         # Generate the folder structure based on the resource_id
         first_level_folder = resource_id[:3]
         second_level_folder = resource_id[3:6]
         file_name = resource_id[6:]
 
         # Construct the full file path
-        file_path = os.path.join(storage_path, 'resources', first_level_folder, second_level_folder, file_name)
+        file_path = os.path.join(
+            storage_path,
+            "resources",
+            first_level_folder,
+            second_level_folder,
+            file_name,
+        )
         log.debug(file_path)
         # Read and return the file contents
         try:
-            with open(file_path, 'r') as file:
+            with open(file_path, "r") as file:
                 contents = file.read()
-            return truncate_output_by_token(contents,token_limit=max_token_length,skip_tokens=skip_tokens)
+            return truncate_output_by_token(
+                contents, token_limit=max_token_length, skip_tokens=skip_tokens
+            )
         except FileNotFoundError:
             return "File not found."
         except Exception as e:
             return str(e)
     else:
-        return truncate_output_by_token(download_file(resource_url,verify=ssl_verify),token_limit=max_token_length,skip_tokens=skip_tokens)
-
+        return truncate_output_by_token(
+            download_file(resource_url, verify=ssl_verify),
+            token_limit=max_token_length,
+            skip_tokens=skip_tokens,
+        )
 
 
 class FuncSignature(BaseModel):

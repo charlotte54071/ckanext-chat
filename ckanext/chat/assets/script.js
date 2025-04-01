@@ -8,9 +8,9 @@ ckan.module("chat-module", function ($, _) {
     if (Array.isArray(content)) {
       cleanHtml = content
         .map(function (item) {
-          if (typeof item === 'object' && item !== null) {
-            console.log('The item is of type object:', item);
-          };
+          if (typeof item === "object" && item !== null) {
+            console.log("The item is of type object:", item);
+          }
           var rawHtml = marked.parse(item);
           return DOMPurify.sanitize(rawHtml, {
             ALLOWED_TAGS: [
@@ -80,7 +80,7 @@ ckan.module("chat-module", function ($, _) {
     initialize: function () {
       this.bindUI();
       this.loadPreviousChats();
-      this.loadChat();  
+      this.loadChat();
       if (this.options.debug) {
         console.log("Chat module initialized");
       }
@@ -155,25 +155,30 @@ ckan.module("chat-module", function ($, _) {
     loadChat: function (index) {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       // Check if index is empty or out of bounds
-      if (index === undefined || index === null || index < 0 || index >= chats.length) {
-          index = chats.length - 1; // Load the last chat
+      if (
+        index === undefined ||
+        index === null ||
+        index < 0 ||
+        index >= chats.length
+      ) {
+        index = chats.length - 1; // Load the last chat
       }
       if (chats[index]) {
-          var chat = chats[index];
-          var messagesDiv = this.el.find("#chatbox");
-          messagesDiv.empty();
-          // Highlight the active chat
-          $("#chatList li").removeClass("active"); // Remove active class from all
-          $("#chatList li").eq(index).addClass("active"); // Add active class to the selected chat
-          var self = this;
-          chat.messages.forEach(function (msg) {
-              if (msg.kind === "request") {
-                  self.appendMessage("user", msg.parts);
-              } else if (msg.kind === "response") {
-                  self.appendMessage("bot", msg.parts);
-              }
-          });
-          this.currentChatLabel = chat.title;
+        var chat = chats[index];
+        var messagesDiv = this.el.find("#chatbox");
+        messagesDiv.empty();
+        // Highlight the active chat
+        $("#chatList li").removeClass("active"); // Remove active class from all
+        $("#chatList li").eq(index).addClass("active"); // Add active class to the selected chat
+        var self = this;
+        chat.messages.forEach(function (msg) {
+          if (msg.kind === "request") {
+            self.appendMessage("user", msg.parts);
+          } else if (msg.kind === "response") {
+            self.appendMessage("bot", msg.parts);
+          }
+        });
+        this.currentChatLabel = chat.title;
       }
     },
 
@@ -234,8 +239,9 @@ ckan.module("chat-module", function ($, _) {
         if (part.part_kind === "system-prompt") return;
         if (who === "bot" && part.part_kind === "user-prompt") return;
 
-        if (["tool-call", "tool-return", "retry-prompt"].includes(part.part_kind)) {
-          console.log(part.tool_call_id)
+        if (
+          ["tool-call", "tool-return", "retry-prompt"].includes(part.part_kind)
+        ) {
           var id = part.tool_call_id;
           if (!toolGroups[id]) {
             toolGroups[id] = { parts: [], order: idx };
@@ -608,7 +614,7 @@ ckan.module("chat-module", function ($, _) {
       localStorage.setItem("previousChats", JSON.stringify(chats));
       this.el.find("#chatbox").empty();
       this.el.find("#userInput").val("");
-      
+
       // Highlight the new chat as active
       this.currentChatLabel = "Current Chat";
       this.loadPreviousChats();
