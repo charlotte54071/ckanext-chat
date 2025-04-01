@@ -597,8 +597,7 @@ ckan.module("chat-module", function ($, _) {
         chats.splice(chatIndex, 1);
         localStorage.setItem("previousChats", JSON.stringify(chats));
         this.loadPreviousChats();
-        this.el.find("#chatbox").empty();
-        this.currentChatLabel = "Current Chat";
+        this.loadChat();
       }
     },
 
