@@ -8,6 +8,9 @@ ckan.module("chat-module", function ($, _) {
     if (Array.isArray(content)) {
       cleanHtml = content
         .map(function (item) {
+          if (typeof item === 'object' && item !== null) {
+            console.log('The item is of type object:', item);
+          };
           var rawHtml = marked.parse(item);
           return DOMPurify.sanitize(rawHtml, {
             ALLOWED_TAGS: [
@@ -22,9 +25,9 @@ ckan.module("chat-module", function ($, _) {
               "ul",
               "ol",
               "li",
-              "a"
+              "a",
             ],
-            ALLOWED_ATTR: ["class", "href"]
+            ALLOWED_ATTR: ["class", "href"],
           });
         })
         .join("");
@@ -43,9 +46,9 @@ ckan.module("chat-module", function ($, _) {
           "ul",
           "ol",
           "li",
-          "a"
+          "a",
         ],
-        ALLOWED_ATTR: ["class", "href"]
+        ALLOWED_ATTR: ["class", "href"],
       });
     }
     return cleanHtml;
@@ -69,7 +72,7 @@ ckan.module("chat-module", function ($, _) {
 
   return {
     options: {
-      debug: false
+      debug: false,
     },
     currentChatLabel: "Current Chat",
 
@@ -81,6 +84,7 @@ ckan.module("chat-module", function ($, _) {
       if (this.options.debug) {
         console.log("Chat module initialized");
       }
+      window.sendMessage = this.sendMessage.bind(this); // Bind sendMessage globally
     },
 
     // Bind all UI events within the module container and globally for sidebar elements
@@ -178,9 +182,11 @@ ckan.module("chat-module", function ($, _) {
       label = label || this.currentChatLabel || "Current Chat";
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       var storedData =
-        (chats.find(function (chat) {
-          return chat.title === label;
-        }) || {}).messages || [];
+        (
+          chats.find(function (chat) {
+            return chat.title === label;
+          }) || {}
+        ).messages || [];
       return convertTimestampsToISO(storedData);
     },
 
@@ -191,19 +197,25 @@ ckan.module("chat-module", function ($, _) {
       }
       var chatbox = this.el.find("#chatbox");
       var self = this;
-    
-      // Helper function to format content (supports objects, arrays, or primitives)
+
       function formatContent(content) {
         if (typeof content === "object" && content !== null) {
           if (Array.isArray(content)) {
-            return "<ul>" + content.map(function(item) {
-              return "<li>" + formatContent(item) + "</li>";
-            }).join("") + "</ul>";
+            return (
+              "<ul>" +
+              content
+                .map(function (item) {
+                  return "<li>" + formatContent(item) + "</li>";
+                })
+                .join("") +
+              "</ul>"
+            );
           } else {
             var html = "<ul>";
             for (var key in content) {
               if (content.hasOwnProperty(key)) {
-                html += "<li>" + key + ": " + formatContent(content[key]) + "</li>";
+                html +=
+                  "<li>" + key + ": " + formatContent(content[key]) + "</li>";
               }
             }
             html += "</ul>";
@@ -213,18 +225,17 @@ ckan.module("chat-module", function ($, _) {
           return String(content);
         }
       }
-    
+
       // Group tool-call/tool-return parts by tool_call_id.
       var toolGroups = {};
       var nonToolParts = [];
-    
+
       message.forEach(function (part, idx) {
-        // Skip system prompts.
         if (part.part_kind === "system-prompt") return;
-        // ignore repeated user prompt when returned by bot
-        if (who==="bot" && part.part_kind === "user-prompt") return;
-    
-        if (part.part_kind === "tool-call" || part.part_kind === "tool-return") {
+        if (who === "bot" && part.part_kind === "user-prompt") return;
+
+        if (["tool-call", "tool-return", "retry-prompt"].includes(part.part_kind)) {
+          console.log(part.tool_call_id)
           var id = part.tool_call_id;
           if (!toolGroups[id]) {
             toolGroups[id] = { parts: [], order: idx };
@@ -234,8 +245,7 @@ ckan.module("chat-module", function ($, _) {
           nonToolParts.push({ part: part, order: idx });
         }
       });
-    
-      // Process each tool group.
+
       Object.keys(toolGroups)
         .sort(function (a, b) {
           return toolGroups[a].order - toolGroups[b].order;
@@ -247,9 +257,8 @@ ckan.module("chat-module", function ($, _) {
           var combinedTimestamp = group[0].timestamp;
           var toolName = group[0].tool_name;
           var succeeded = false;
-    
+
           group.forEach(function (p) {
-            // Update timestamp if this part's timestamp is newer.
             if (new Date(p.timestamp) > new Date(combinedTimestamp)) {
               combinedTimestamp = p.timestamp;
             }
@@ -257,28 +266,25 @@ ckan.module("chat-module", function ($, _) {
               argumentsContent += "<p>Arguments: " + p.args + "</p>";
             } else if (p.part_kind === "tool-return") {
               succeeded = true;
-              // Use formatContent to handle objects, arrays, or primitives.
               outputContent += "<p>Output:</p>" + formatContent(p.content);
             }
           });
-    
+
           var statusClass = succeeded ? "border-success" : "border-danger";
           var collapseId = "collapse" + groupId;
-          // Check if a card with this collapseId already exists.
           var existingCollapse = chatbox.find("#" + collapseId);
-    
+
           if (existingCollapse.length > 0) {
-            // Update existing card.
             var cardContainer = existingCollapse.closest(".col-auto.card");
-            // Remove old status classes and add the new one.
-            cardContainer.removeClass("border-danger border-success").addClass(statusClass);
-            // Update the card title with the latest timestamp.
-            cardContainer.find(".card-title").html("Tool Call: " + toolName + " " + combinedTimestamp);
-            // Append new details to the existing card body.
+            cardContainer
+              .removeClass("border-danger border-success")
+              .addClass(statusClass);
+            cardContainer
+              .find(".card-title")
+              .html("Tool Call: " + toolName + " " + combinedTimestamp);
             var cardBody = existingCollapse.find(".card-body");
             cardBody.append(argumentsContent + outputContent);
           } else {
-            // Create a new card.
             var combinedCardHtml = $(`
               <div class="message bot-message">
                 <span class="col-2 chatavatar"><i class="fas fa-robot"></i></span>
@@ -301,12 +307,11 @@ ckan.module("chat-module", function ($, _) {
             chatbox.append(combinedCardHtml);
           }
         });
-    
-      // Process non-tool parts in order.
+
       nonToolParts.sort(function (a, b) {
         return a.order - b.order;
       });
-      nonToolParts.forEach(function (item) {
+      nonToolParts.forEach(function (item, index) {
         var part = item.part;
         var messageHtml = $(`
           <div class="message ${who === "user" ? "user-message" : "bot-message"}">
@@ -316,10 +321,35 @@ ckan.module("chat-module", function ($, _) {
             </div>
           </div>
         `);
+
+        if (who === "bot") {
+          messageHtml.find("a").each(function () {
+            var link = $(this);
+            var buttonId = `download-btn-${index}`; // Generate a unique ID for each button
+            var downloadButton = $(
+              '<button id="${buttonId}" class="btn download-link-content-btn" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="import file contents to prompt"><i class="fas fa-file-import"></i></button>',
+            );
+
+            downloadButton.on("click", function () {
+              var url = link.attr("href");
+              $.get(url, function (data) {
+                self.el.find("#userInput").val(data); // Paste the content into the textarea
+                $("html, body").animate(
+                  { scrollTop: $(document).height() },
+                  "slow",
+                ); // Scroll to the bottom of the page
+              }).fail(function () {
+                alert("Failed to download content from the URL.");
+              });
+            });
+
+            link.after(downloadButton);
+          });
+        }
+
         chatbox.append(messageHtml);
       });
-    
-      // Highlight code blocks and add copy buttons.
+
       chatbox.find("pre code").each(function () {
         if (!$(this).attr("data-highlighted")) {
           hljs.highlightElement(this);
@@ -328,8 +358,11 @@ ckan.module("chat-module", function ($, _) {
       });
       self.addCopyButtonsToCodeBlocks();
       chatbox.scrollTop(chatbox[0].scrollHeight);
+
+      // Reinitialize tooltips for dynamically added buttons
+      $('[data-bs-toggle="tooltip"]').tooltip();
     },
-    
+
     // Toggle collapsible details for tool messages.
     toggleDetails: function (collapseId) {
       var collapseElement = document.getElementById(collapseId);
@@ -337,14 +370,14 @@ ckan.module("chat-module", function ($, _) {
         new bootstrap.Collapse(collapseElement, { toggle: true });
       }
     },
-            
+
     // Add copy buttons to code blocks
     addCopyButtonsToCodeBlocks: function () {
       this.el.find("pre code").each(function () {
         var codeBlock = $(this);
         if (codeBlock.parent().find(".copy-button").length > 0) return;
         var copyButton = $(
-          '<button class="copy-button"><i class="fas fa-copy"></i></button>'
+          '<button class="copy-button"><i class="fas fa-copy"></i></button>',
         );
         copyButton.on("click", function () {
           navigator.clipboard
@@ -393,7 +426,9 @@ ckan.module("chat-module", function ($, _) {
         buttonText.addClass("d-none");
         icon.addClass("d-none");
 
-        $.post("chat/ask", { text: "Provide only a 3-word title for this question: " + text })
+        $.post("chat/ask", {
+          text: "Provide only a 3-word title for this question: " + text,
+        })
           .done(function (data) {
             var label = self.getLastEntryText(data.response);
             if (!chatHistory.length) {
@@ -434,21 +469,25 @@ ckan.module("chat-module", function ($, _) {
     sendBotMessage: function (text, label, callback) {
       var history = this.getChatHistory(label);
       var self = this;
-      $.post("chat/ask", { text: text, history: JSON.stringify(history) }, function (data) {
-        self.saveChat(data.response, label);
-        data.response.forEach(function (msg, index) {
-          // Skip the first element by checking the index because its the lat user prompt
-          // if (index === 0) return;
-          // console.log(msg)
-          if (msg.kind === "request") {
-            self.appendMessage("bot", msg.parts);
-          } else if (msg.kind === "response") {
-            self.appendMessage("bot", msg.parts);
-          }
-        });
-        // self.appendMessage("bot", data.response[data.response.length - 1].parts);
-        if (callback) callback();
-      });
+      $.post(
+        "chat/ask",
+        { text: text, history: JSON.stringify(history) },
+        function (data) {
+          self.saveChat(data.response, label);
+          data.response.forEach(function (msg, index) {
+            // Skip the first element by checking the index because its the lat user prompt
+            // if (index === 0) return;
+            // console.log(msg)
+            if (msg.kind === "request") {
+              self.appendMessage("bot", msg.parts);
+            } else if (msg.kind === "response") {
+              self.appendMessage("bot", msg.parts);
+            }
+          });
+          // self.appendMessage("bot", data.response[data.response.length - 1].parts);
+          if (callback) callback();
+        },
+      );
     },
 
     // Save new messages to the chat history in localStorage
@@ -461,7 +500,8 @@ ckan.module("chat-module", function ($, _) {
         chats.push({ title: label, messages: [] });
         existingChatIndex = chats.length - 1;
       }
-      chats[existingChatIndex].messages = chats[existingChatIndex].messages.concat(newMessages);
+      chats[existingChatIndex].messages =
+        chats[existingChatIndex].messages.concat(newMessages);
       localStorage.setItem("previousChats", JSON.stringify(chats));
     },
 
@@ -474,13 +514,16 @@ ckan.module("chat-module", function ($, _) {
         alert("No chat history available.");
         return;
       }
-    
+
       // Locate the last message containing a part with "user-prompt"
       var lastUserIndex = -1;
       for (var i = chatHistory.length - 1; i >= 0; i--) {
-        if (chatHistory[i].parts && chatHistory[i].parts.some(function (part) {
-          return part.part_kind === "user-prompt";
-        })) {
+        if (
+          chatHistory[i].parts &&
+          chatHistory[i].parts.some(function (part) {
+            return part.part_kind === "user-prompt";
+          })
+        ) {
           lastUserIndex = i;
           break;
         }
@@ -489,10 +532,10 @@ ckan.module("chat-module", function ($, _) {
         alert("No user prompt found in chat history.");
         return;
       }
-    
+
       // Remove the last user prompt message from the stored chat history
       var newChatHistory = chatHistory.slice(0, lastUserIndex);
-    
+
       // Update localStorage with the trimmed chat history
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       var chatIndex = chats.findIndex(function (chat) {
@@ -504,11 +547,11 @@ ckan.module("chat-module", function ($, _) {
       }
       chats[chatIndex].messages = newChatHistory;
       localStorage.setItem("previousChats", JSON.stringify(chats));
-    
+
       // Refresh the chat UI
       this.el.find("#chatbox").empty();
       this.loadChat(chatIndex);
-    
+
       // Retrieve the user prompt text from the removed message
       var lastUserMessage = chatHistory[lastUserIndex];
       var userPromptPart = lastUserMessage.parts.find(function (part) {
@@ -519,12 +562,11 @@ ckan.module("chat-module", function ($, _) {
         alert("User prompt text is empty.");
         return;
       }
-    
+
       // Set the user input field and call sendMessage (which triggers the spinner)
       this.el.find("#userInput").val(userText);
       this.sendMessage();
     },
-
 
     // Send a file via AJAX (if needed)
     sendFile: function () {
@@ -540,7 +582,7 @@ ckan.module("chat-module", function ($, _) {
         success: (data) => {
           this.appendMessage("user", "Uploaded a file");
           this.appendMessage("bot", data.response);
-        }
+        },
       });
     },
 
@@ -567,8 +609,12 @@ ckan.module("chat-module", function ($, _) {
       localStorage.setItem("previousChats", JSON.stringify(chats));
       this.el.find("#chatbox").empty();
       this.el.find("#userInput").val("");
+      
+      // Highlight the new chat as active
       this.currentChatLabel = "Current Chat";
       this.loadPreviousChats();
-    }
+      $("#chatList li").removeClass("active"); // Remove active class from all
+      $("#chatList li").last().addClass("active"); // Add active class to the new chat
+    },
   };
 });
