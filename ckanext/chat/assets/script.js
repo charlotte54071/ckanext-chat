@@ -77,6 +77,7 @@ ckan.module("chat-module", function ($, _) {
     initialize: function () {
       this.bindUI();
       this.loadPreviousChats();
+      this.loadChat();  
       if (this.options.debug) {
         console.log("Chat module initialized");
       }
@@ -132,8 +133,7 @@ ckan.module("chat-module", function ($, _) {
       chatListElement.empty();
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       if (chats.length === 0) {
-        chats.push({ title: this.currentChatLabel, messages: [] });
-        localStorage.setItem("previousChats", JSON.stringify(chats));
+        this.newChat();
       }
       var self = this;
       chats.forEach(function (chat, index) {
@@ -150,19 +150,26 @@ ckan.module("chat-module", function ($, _) {
     // Load a specific chat based on its index in localStorage
     loadChat: function (index) {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
+      // Check if index is empty or out of bounds
+      if (index === undefined || index === null || index < 0 || index >= chats.length) {
+          index = chats.length - 1; // Load the last chat
+      }
       if (chats[index]) {
-        var chat = chats[index];
-        var messagesDiv = this.el.find("#chatbox");
-        messagesDiv.empty();
-        var self = this;
-        chat.messages.forEach(function (msg) {
-          if (msg.kind === "request") {
-            self.appendMessage("user", msg.parts);
-          } else if (msg.kind === "response") {
-            self.appendMessage("bot", msg.parts);
-          }
-        });
-        this.currentChatLabel = chat.title;
+          var chat = chats[index];
+          var messagesDiv = this.el.find("#chatbox");
+          messagesDiv.empty();
+          // Highlight the active chat
+          $("#chatList li").removeClass("active"); // Remove active class from all
+          $("#chatList li").eq(index).addClass("active"); // Add active class to the selected chat
+          var self = this;
+          chat.messages.forEach(function (msg) {
+              if (msg.kind === "request") {
+                  self.appendMessage("user", msg.parts);
+              } else if (msg.kind === "response") {
+                  self.appendMessage("bot", msg.parts);
+              }
+          });
+          this.currentChatLabel = chat.title;
       }
     },
 
@@ -377,9 +384,6 @@ ckan.module("chat-module", function ($, _) {
       if (text.trim() !== "") {
         self.appendMessage("user", text);
         var chatHistory = self.getChatHistory();
-        if (!chatHistory.length) {
-          self.currentChatLabel = "Current Chat";
-        }
         var sendButton = this.el.find("#sendButton");
         var spinner = sendButton.find(".spinner-border");
         var buttonText = sendButton.find(".button-text");
