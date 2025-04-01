@@ -378,7 +378,15 @@ routes: Dict[str, RouteModel] = {}
 
 
 @agent.tool_plain
-def get_ckan_url_patterns(help: bool = True, endpoint: str = "") -> RouteModel:
+def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
+    """Get URL Flask Blueprint routes to views in CKAN
+
+    Args:
+        endpoint (str, optional): If empty returns a list of all possible endpoints. If set returns the details of the endpoint. Defaults to "".
+
+    Returns:
+        RouteModel: All details on the Route
+    """
     global routes
     if not routes:
         from ckanext.chat.views import global_ckan_app
@@ -391,16 +399,16 @@ def get_ckan_url_patterns(help: bool = True, endpoint: str = "") -> RouteModel:
                     methods=sorted(list(rule.methods)),
                 )
                 routes[rule.endpoint] = route
-    if endpoint in routes.keys():
+    if endpoint and endpoint in routes.keys():
         return routes[endpoint].json()
-    if help:
-        return [str(key) for key in routes.keys()]
+    else:
+        endpoints=[str(key) for key in routes.keys()]
+        return f"route endpoint not found. List of endpoints: {endpoints}"
 
 
 def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
-    for key, route in routes.items():
-        if route.endpoint == endpoint:
-            return route
+    if endpoint in routes.keys():
+        return routes[endpoint]
     return None
 
 

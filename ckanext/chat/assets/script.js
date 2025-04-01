@@ -461,7 +461,7 @@ ckan.module("chat-module", function ($, _) {
       if (chatIndex !== -1) {
         chats[chatIndex].title = newLabel;
         localStorage.setItem("previousChats", JSON.stringify(chats));
-        this.loadPreviousChats();
+        $("#chatList li").eq(chatIndex).text(newLabel); // Update the text of the corresponding list item
       }
     },
 
