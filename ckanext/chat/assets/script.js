@@ -328,30 +328,30 @@ ckan.module("chat-module", function ($, _) {
           </div>
         `);
 
-        if (who === "bot") {
-          messageHtml.find("a").each(function () {
-            var link = $(this);
-            var buttonId = `download-btn-${index}`; // Generate a unique ID for each button
-            var downloadButton = $(
-              '<button id="${buttonId}" class="btn download-link-content-btn" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="import file contents to prompt"><i class="fas fa-file-import"></i></button>',
-            );
+        // if (who === "bot") {
+        //   messageHtml.find("a").each(function () {
+        //     var link = $(this);
+        //     var buttonId = `download-btn-${index}`; // Generate a unique ID for each button
+        //     var downloadButton = $(
+        //       '<button id="${buttonId}" class="btn download-link-content-btn" data-bs-toggle="tooltip" data-bs-placement="right" data-bs-title="import file contents to prompt"><i class="fas fa-file-import"></i></button>',
+        //     );
 
-            downloadButton.on("click", function () {
-              var url = link.attr("href");
-              $.get(url, function (data) {
-                self.el.find("#userInput").val(data); // Paste the content into the textarea
-                $("html, body").animate(
-                  { scrollTop: $(document).height() },
-                  "slow",
-                ); // Scroll to the bottom of the page
-              }).fail(function () {
-                alert("Failed to download content from the URL.");
-              });
-            });
+        //     downloadButton.on("click", function () {
+        //       var url = link.attr("href");
+        //       $.get(url, function (data) {
+        //         self.el.find("#userInput").val(data); // Paste the content into the textarea
+        //         $("html, body").animate(
+        //           { scrollTop: $(document).height() },
+        //           "slow",
+        //         ); // Scroll to the bottom of the page
+        //       }).fail(function () {
+        //         alert("Failed to download content from the URL.");
+        //       });
+        //     });
 
-            link.after(downloadButton);
-          });
-        }
+        //     link.after(downloadButton);
+        //   });
+        // }
 
         chatbox.append(messageHtml);
       });
