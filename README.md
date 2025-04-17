@@ -2,9 +2,32 @@
 
 [![Tests](https://github.com/Mat-O-Lab/ckanext-chat/actions/workflows/test.yml/badge.svg)](https://github.com/Mat-O-Lab/ckanext-chat/actions/workflows/test.yml)
 
-A plugin integrating a chat interface in ckan with a [pydanticai](https://ai.pydantic.dev/) agent that can use all available ckan actions and url_patterns. All actions are done with user aware context. The chat interface uses marked and highightjs to display responses. Chat histories are saved in the local storage of the user. The agent is chat history aware.
+A plugin integrating a chat interface in ckan with a [pydanticai](https://ai.pydantic.dev/) agent that can use all available ckan actions and url_patterns. All actions are done with user aware context. The chat interface uses marked and highightjs to display responses. Chat histories are saved in the local storage of the user. The agent is chat history aware. 
+LLMs to use are configured in the bot/agent.py a section Model & Agent Setup. An Azure Openai and a local impementation using openai compartible api of ollama is implemeneted.
+
+
+## Option Rag Search
+It has a rag_search tool that can facilitate a Milvus vector store if it is set up. Currently it relies on the Azure OpenAI embeddings api and will not work with local deployments. It uses the embedding model text-embedding-3-small to form the search vector.
+To make use of the documents it returns, the metadata of te vectores should include the dataset and resource ids at least. See the class VectorMeta for expected fields.
 
 ![chat example](./ckanext-chat.PNG)
+
+## LLM Compartibility
+
+Openai Models starting from gpt-35 on work very well. Local LLMs tested with ollama server are listed below.
+
+| LLM    | Compatible? |
+| --------------- | ----------- |
+| qwen2.5:32b | works, but some wierd output |
+| llama3.3:70B            | works not so well, reluctant to run actions right away         |
+| gemma3            | not working, no tool support         |
+| phi4            | not working, no tool support         |
+| qwq            | to much thinking, not enogh action       |
+| mistal:7B            | When Using OpenAI interface of Ollama n good tool integration    |
+
+
+in general reasoning models dont perform well
+
 
 ## Requirements
 

@@ -15,6 +15,7 @@ from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
 from openai import AsyncAzureOpenAI
+from openai.resources.embeddings import Embeddings
 from pydantic import (
     BaseModel,
     HttpUrl,
@@ -38,7 +39,7 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
@@ -198,7 +199,7 @@ if milvus_url:
 else:
     milvus_client = None
 
-# --------------------- Azure & Agent Setup ---------------------
+# --------------------- Model & Agent Setup ---------------------
 
 # Azure Setup
 azure_client = AsyncAzureOpenAI(
@@ -211,18 +212,18 @@ azure_client = AsyncAzureOpenAI(
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
 model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
-# Ollama setup
+# #Ollama setup
 # model = OpenAIModel(
 #     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
 #     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
 # )
-
 
 @dataclass
 class Deps:
     user_id: str
     milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
     openai: OpenAIModel = field(default_factory=lambda: model)
+    embeddings: Embeddings = field(default=azure_client.embeddings)
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
@@ -251,17 +252,19 @@ def init_dynamic_models():
 
 # --------------------- System Prompt & Agent ---------------------
 system_prompt = (
+    "Role:\n\n"
+    "You are an assistant to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
     "Key Guidelines:\n\n"
-    "- You *must* use `get_action_info` on any action you want to run to understand the action dand its arguments.\n"
-    "- For update or patch operations, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
+    "- You *must* use `get_action_info` on any action you want to run to understand the action and its arguments. After ur instrcuted to run the action immediately to try it.\n"
+    "- For update or patch actions, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
     "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
-    "- For general dataset searches and overviews, prioritize using `package_search`. Run the package_search action with an empty query to fetch all datasets.\n"
+    "- For general dataset searches and overviews, prioritize using action nameed `package_search`. Run the package_search action with an parameter q="", to fetch all datasets.\n"
     "- For more detailed document searches, try `rag_search` first; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
     "- Ensure you select the appropriate tool based on the user's request and the available capabilities.\n\n"
     "Your Toolset:\n\n"
     "1. **List CKAN Actions:**\n"
     "- **Function:** `get_ckan_actions() -> List[str]`\n"
-    "- **Purpose:** Retrieves a complete list of available CKAN action functions.\n"
+    "- **Purpose:** Retrieves a complete list of available CKAN action by name.\n"
     "- **When to Use:** When you need an overview of potential actions.\n\n"
     "2. **Get Function Information:**\n"
     "- **Function:** `get_action_info(action_key: str) -> dict`\n"
@@ -292,8 +295,9 @@ system_prompt = (
 agent = Agent(
     model=model,
     deps_type=Deps,
-    system_prompt=system_prompt,
+    system_prompt="".join(system_prompt),
     retries=3,
+    #model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
 
@@ -415,6 +419,11 @@ def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
 
 @agent.tool_plain
 def get_ckan_actions() -> List[str]:
+    """Lists all avalable CKAN actions by action name
+
+    Returns:
+        List[str]: List of names of CKAN actions
+    """
     from ckan.logic import _actions
 
     return [key for key in _actions.keys()]
@@ -438,6 +447,16 @@ def get_action_info(action_key: str) -> dict:
 
 @agent.tool
 def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
+    """Run CKAN actions basd on the action name and parameters as a dict.
+
+    Args:
+        ctx (RunContext[Deps]): Instance of Agent dependencys at runtime, passed in by agent framework by default
+        action_name (str): Name of the action to run
+        parameters (Dict): Dict of Parameters to be passed to the action
+
+    Returns:
+        Any: Output of the action run
+    """
     user = CKANmodel.User.get(user_reference=ctx.deps.user_id)
     context = {
         "user": user.name,
@@ -642,29 +661,40 @@ class RagHit(BaseModel):
 async def rag_search(
     ctx: RunContext[Deps], search_query: List[str], limit: int = 3
 ) -> List[RagHit]:
-    if not ctx.deps.milvus_client:
-        return "The Milvus Client was not setup properly, no rag_serach supported in the moment."
-    emb_r = await ctx.deps.openai.embeddings.create(
-        input=search_query,
-        model="text-embedding-3-small",
-        dimensions=ctx.deps.vector_dim,
-    )
-    query_vectors = [vec.embedding for vec in emb_r.data]
-    search_res = ctx.deps.milvus_client.search(
-        collection_name=ctx.deps.collection_name,
-        data=query_vectors,
-        search_params={"metric_type": "COSINE", "params": {"level": 1}},
-        limit=limit,
-        output_fields=list(VectorMeta.__fields__.keys()),
-        consistency_level="Bounded",
-    )
-    if search_res:
-        hits = []
-        for i in range(len(query_vectors)):
-            hits += [RagHit(**item) for item in search_res[i]]
-        return [hit.json() for hit in hits]
+    """Vector rag serach using Milvus vector store
+
+    Args:
+        ctx (RunContext[Deps]): Instance of Agent dependencys at runtime, passed in by agent framework by default
+        search_query (List[str]): A list of strings or which to do the vector search with.
+        limit (int, optional): Limit for amount of Hits to be returned for the serach. Defaults to 3.
+
+    Returns:
+        List[RagHit]: List of RagHit instances as a reult of rag search. the object provided a distance attribute with the metrics of similarity and an entity attribute containing the meta data of the vector entity in store.
+    """
+    if not ctx.deps.milvus_client or not ctx.deps.embeddings:
+       return "The Milvus Client was not setup properly, no rag_search supported in the moment."
     else:
-        return []
+        emb_r = await ctx.deps.embeddings.create(
+            input=search_query,
+            model="text-embedding-3-small",
+            dimensions=ctx.deps.vector_dim,
+        )
+        query_vectors = [vec.embedding for vec in emb_r.data]
+        search_res = ctx.deps.milvus_client.search(
+            collection_name=ctx.deps.collection_name,
+            data=query_vectors,
+            search_params={"metric_type": "COSINE", "params": {"level": 1}},
+            limit=limit,
+            output_fields=list(VectorMeta.__fields__.keys()),
+            consistency_level="Bounded",
+        )
+        if search_res:
+            hits = []
+            for i in range(len(query_vectors)):
+                hits += [RagHit(**item) for item in search_res[i]]
+            return [hit.json() for hit in hits]
+        else:
+            return []
 
 
 def get_user_token(user_id: str) -> Optional[str]:
