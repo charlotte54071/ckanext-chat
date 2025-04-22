@@ -1,5 +1,4 @@
 chat-css:
-  filters: cssrewrite
   output: ckanext-chat/%(version)s-chat.css
   contents:
     - style.css

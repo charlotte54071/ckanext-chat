@@ -23,7 +23,7 @@ Openai Models starting from gpt-35 on work very well. Local LLMs tested with oll
 | gemma3            | not working, no tool support         |
 | phi4            | not working, no tool support         |
 | qwq            | to much thinking, not enogh action       |
-| mistal:7B            | When Using OpenAI interface of Ollama n good tool integration    |
+| mistal:7B            | When Using OpenAI interface of Ollama no good tool integration    |
 
 
 in general reasoning models dont perform well
