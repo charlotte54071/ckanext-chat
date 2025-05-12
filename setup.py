@@ -1,21 +1,44 @@
 # -*- coding: utf-8 -*-
-from setuptools import setup
+from codecs import open  # To use a consistent encoding
+from os import path, environ
 
-# Note: Do not add new arguments to setup(), instead add setuptools
-# configuration options to setup.cfg, or any other project information
-# to pyproject.toml
-# See https://github.com/ckan/ckan/issues/8382 for details
+from setuptools import find_packages, setup  # Always prefer setuptools over distutils
+
+here = path.abspath(path.dirname(__file__))
+
+
+# Get the long description from the relevant file
+with open(path.join(here, "README.md"), encoding="utf-8") as f:
+    long_description = f.read()
 
 setup(
-    # If you are changing from the default layout of your extension, you may
-    # have to change the message extractors, you can read more about babel
-    # message extraction at
-    # http://babel.pocoo.org/docs/messages/#extraction-method-mapping-and-configuration
+    name="""ckanext-chat""",
+    # Versions should comply with PEP440.  For a discussion on single-sourcing
+    # the version across setup.py and the project code, see
+    # http://packaging.python.org/en/latest/tutorial.html#version
+    version=environ.get('VERSION', '0.0.0'),
+    description="""Extension adds a pydantic ai chat interface to CKAN, that can run actions with user aware context.""",
+    long_description=long_description,
+    long_description_content_type="text/markdown",
+    # The project's main homepage.
+    url="https://github.com/Mat-O-Lab/ckanext-chat",
+    # Author details
+    author="""Thomas Hanke""",
+    author_email="""thomas.hanke@iwm.fraunhofer.de""",
+    # Choose your license
+    license="AGPL",
     message_extractors={
         "ckanext": [
             ("**.py", "python", None),
             ("**.js", "javascript", None),
             ("**/templates/**.html", "ckan", None),
         ],
-    }
+    },
+    # To provide executable scripts, use entry points in preference to the
+    # "scripts" keyword. Entry points provide cross-platform support and allow
+    # pip to create the appropriate form of executable for the target platform.
+    entry_points="""
+        [ckan.plugins]
+        chat=ckanext.chat.plugin:ChatPlugin
+    """,
 )
