@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 from codecs import open  # To use a consistent encoding
-from os import path, environ
+from os import environ, path
 
-from setuptools import find_packages, setup  # Always prefer setuptools over distutils
+from setuptools import (  # Always prefer setuptools over distutils
+    find_packages, setup)
 
 here = path.abspath(path.dirname(__file__))
 
@@ -11,7 +12,7 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
 
-with open(path.join(here,"requirements.txt")) as f:
+with open(path.join(here, "requirements.txt")) as f:
     requirements = f.read().splitlines()
 
 setup(
@@ -19,7 +20,7 @@ setup(
     # Versions should comply with PEP440.  For a discussion on single-sourcing
     # the version across setup.py and the project code, see
     # http://packaging.python.org/en/latest/tutorial.html#version
-    version=environ.get('VERSION', '0.0.0'),
+    version=environ.get("VERSION", "0.0.0"),
     description="""Extension adds a pydantic ai chat interface to CKAN, that can run actions with user aware context.""",
     long_description=long_description,
     long_description_content_type="text/markdown",

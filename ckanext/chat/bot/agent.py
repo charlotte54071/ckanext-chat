@@ -16,29 +16,15 @@ from ckan.model.package import Package
 from ckan.model.resource import Resource
 from openai import AsyncAzureOpenAI
 from openai.resources.embeddings import Embeddings
-from pydantic import (
-    BaseModel,
-    HttpUrl,
-    ValidationError,
-    computed_field,
-    root_validator,
-)
+from pydantic import (BaseModel, ConfigDict, HttpUrl, ValidationError,
+                      computed_field, root_validator)
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.exceptions import (
-    AgentRunError,
-    FallbackExceptionGroup,
-    ModelHTTPError,
-    ModelRetry,
-    UnexpectedModelBehavior,
-    UsageLimitExceeded,
-)
-from pydantic_ai.messages import (
-    ModelMessagesTypeAdapter,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
+from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
+                                    ModelHTTPError, ModelRetry,
+                                    UnexpectedModelBehavior,
+                                    UsageLimitExceeded)
+from pydantic_ai.messages import (ModelMessagesTypeAdapter, ModelRequest,
+                                  ModelResponse, TextPart, UserPromptPart)
 from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import UsageLimits
@@ -206,7 +192,8 @@ azure_client = AsyncAzureOpenAI(
     azure_endpoint=toolkit.config.get(
         "ckanext.chat.completion_url", "https://your.chat.api"
     ),
-    api_version="2024-02-15-preview",
+    # api_version="2024-02-15-preview",
+    api_version="2024-06-01",
     api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
 )
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
@@ -217,6 +204,7 @@ model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_clie
 #     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
 #     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
 # )
+
 
 @dataclass
 class Deps:
@@ -258,8 +246,9 @@ system_prompt = (
     "- You *must* use `get_action_info` on any action you want to run to understand the action and its arguments. After ur instrcuted to run the action immediately to try it.\n"
     "- For update or patch actions, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
     "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
-    "- For general dataset searches and overviews, prioritize using action nameed `package_search`. Run the package_search action with an parameter q="", to fetch all datasets.\n"
-    "- For more detailed document searches, try `rag_search` first; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
+    "- For general dataset searches and overviews, prioritize using action nameed `package_search`. Run the package_search action with an parameter q="
+    ", to fetch all datasets.\n"
+    "- For more detailed document searches, try `literature_search` first; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
     "- Ensure you select the appropriate tool based on the user's request and the available capabilities.\n\n"
     "Your Toolset:\n\n"
     "1. **List CKAN Actions:**\n"
@@ -283,11 +272,11 @@ system_prompt = (
     "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
     "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
     "6. **Retrieve Documents:**\n"
-    "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
-    "- **Purpose:** Performs a vector search on document chunks using a list of search strings.\n"
+    "- **Function:** `literature_search: str) -> List[str]`\n"
+    "- **Purpose:** Performs a literature search on documents by the question you ask. Mention the number of hits you want to have as return.\n"
     "- **When to Use:**\n"
     "   - For in-depth document searches.\n"
-    "   - If `rag_search` indicates that the milvus client is not set up, then use `package_search` instead.\n"
+    "   - If `literature_search` indicates that the milvus client is not set up, then use `package_search` instead.\n"
     "   - For general dataset searches or overviews, prefer `package_search`.\n"
 )
 
@@ -297,7 +286,79 @@ agent = Agent(
     deps_type=Deps,
     system_prompt="".join(system_prompt),
     retries=3,
-    #model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
+    # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
+)
+
+
+# --------------------- Vector & RAG Models ---------------------
+
+from datetime import datetime
+from uuid import UUID
+
+
+class MyBaseModel(BaseModel):
+    model_config = ConfigDict(
+        from_attributes=True,  # allows .model_dump to work with ORM-style objects
+        json_encoders={
+            UUID: str,
+            HttpUrl: str,
+            datetime: lambda dt: dt.isoformat(),  # or str(dt)
+        },
+    )
+
+
+class VectorMeta(MyBaseModel):
+    id: int
+    chunk_id: Optional[int] = None
+    chunks: Optional[HttpUrl] = None
+    dataset_id: Optional[str] = None
+    dataset_url: Optional[HttpUrl] = None
+    groups: Optional[list[str]] = None
+    private: Optional[str] = None
+    resource_id: Optional[str] = None
+    source: Optional[HttpUrl] = None
+    view_url: Optional[list[HttpUrl]] = None
+
+
+class RagHit(BaseModel):
+    id: int
+    distance: Optional[float] = None
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    entity: VectorMeta
+
+
+class LitSearchResult(BaseModel):
+    search_str: Optional[list[str]] = None
+    results: Optional[list] = None
+    error: Optional[list[str]] = None
+
+
+rag_prompt = (
+    "Role:\n\n"
+    "You are an assistant doing literature search be rephrasig questions and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
+    "Key Guidelines:\n\n"
+    "- when rephasing questions make sure to stay close to the context of the original input as much as possible. Search strings musst consist of 3 words minimum.\n"
+    "- use the `rag_search` tool find hits for chunks of literature by passing a list of search strings.\n"
+    "- beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
+    "- for all hits try to access the text and create  a joint result object per distinct source. it should include the title of the source, a summary why its relevant and the rest of the vector metadata."
+    # "- to any hit you retrieve try to access the text and add the title of the document to a title field of the hit, by either retrieving it from the VectorMeta or the text and create markdown link in the form [title](url to document).\n\n"
+    # "- to any hit you retrieve add a summary of its relevants to the summary field of the hit in less then 500 string length. If the hit does not provide the desired context, discard the hit!\n\n"
+    "- make sure that u get at least 5 good results for the context that is in question by running the search again if no number of results is requested.\n\n"
+    "- any error occuring return to the error field as strings.\n\n"
+    "Your Toolset:\n\n"
+    "1. **Retrieve Documents:**\n"
+    "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
+    "- **Purpose:** Performs a vector search on document chunks using a list of search strings.\n"
+)
+
+rag_agent = Agent(
+    model=model,
+    deps_type=Deps,
+    output_type=LitSearchResult,
+    system_prompt="".join(rag_prompt),
+    retries=3,
+    # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
 
@@ -340,8 +401,8 @@ def repl(match):
 class RouteModel(BaseModel):
     endpoint: str
     rule: str
-    methods: List[str]
-    variables: Optional[List] = []
+    methods: Optional[list[str]] = []
+    variables: Optional[list] = []
     full_url_pattern: Optional[str]
 
     @root_validator(pre=True)
@@ -644,11 +705,11 @@ class VectorMeta(BaseModel):
     chunks: Optional[HttpUrl] = None
     dataset_id: Optional[str] = None
     dataset_url: Optional[HttpUrl] = None
-    groups: Optional[List[str]] = None
+    groups: Optional[list[str]] = None
     private: Optional[str] = None
     resource_id: Optional[str] = None
     source: Optional[HttpUrl] = None
-    view_url: Optional[List[HttpUrl]] = None
+    view_url: Optional[list[HttpUrl]] = None
 
 
 class RagHit(BaseModel):
@@ -657,7 +718,13 @@ class RagHit(BaseModel):
     entity: VectorMeta
 
 
-@agent.tool
+class LitSearchResult(BaseModel):
+    search_str: Optional[list[str]] = None
+    hits: Optional[list[RagHit]] = None
+    error: Optional[str] = None
+
+
+@rag_agent.tool
 async def rag_search(
     ctx: RunContext[Deps], search_query: List[str], limit: int = 3
 ) -> List[RagHit]:
@@ -672,7 +739,7 @@ async def rag_search(
         List[RagHit]: List of RagHit instances as a reult of rag search. the object provided a distance attribute with the metrics of similarity and an entity attribute containing the meta data of the vector entity in store.
     """
     if not ctx.deps.milvus_client or not ctx.deps.embeddings:
-       return "The Milvus Client was not setup properly, no rag_search supported in the moment."
+        return "The Milvus Client was not setup properly, no rag_search supported in the moment."
     else:
         emb_r = await ctx.deps.embeddings.create(
             input=search_query,
@@ -691,10 +758,22 @@ async def rag_search(
         if search_res:
             hits = []
             for i in range(len(query_vectors)):
-                hits += [RagHit(**item) for item in search_res[i]]
-            return [hit.json() for hit in hits]
+                hit = [RagHit(**item) for item in search_res[i]]
+                log.debug(hit)
+                hits += hit
+            return hits
         else:
             return []
+
+
+@agent.tool
+async def literature_search(ctx: RunContext[Deps], search_question: str) -> list[str]:
+    r = await rag_agent.run(
+        f"{search_question}.",
+        deps=ctx.deps,
+    )
+    # log.debug(r.data)
+    return r.data.json()
 
 
 def get_user_token(user_id: str) -> Optional[str]:
