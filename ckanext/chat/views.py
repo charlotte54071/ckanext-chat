@@ -7,12 +7,9 @@ from ckan.common import _, current_user
 from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
 
-from ckanext.chat.bot.agent import (
-    Deps,
-    async_agent_response,
-    exception_to_model_response,
-    user_input_to_model_request,
-)
+from ckanext.chat.bot.agent import (Deps, async_agent_response,
+                                    exception_to_model_response,
+                                    user_input_to_model_request)
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
@@ -53,7 +50,8 @@ class ChatView(MethodView):
             },
         )
 
-from pydantic_ai.messages import TextPart, ModelMessage
+
+from pydantic_ai.messages import ModelMessage, TextPart
 
 # Assuming 'response' is an instance of ModelResponse
 
@@ -77,9 +75,17 @@ def ask():
             # Now response is guaranteed to have new_messages() if no exception occurred.
             # Ensure new_messages() is awaited in the sync wrapper if it's async
             messages = response.new_messages()
-            #remove empty text responses parts
-            [[ message.parts.remove(part) for part in message.parts if isinstance(part, TextPart) and part.content==""] for message in messages]
+            # remove empty text responses parts
+            [
+                [
+                    message.parts.remove(part)
+                    for part in message.parts
+                    if isinstance(part, TextPart) and part.content == ""
+                ]
+                for message in messages
+            ]
             return jsonify({"response": messages})
+
         except Exception as e:
             user_promt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
