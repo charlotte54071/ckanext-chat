@@ -4,7 +4,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
@@ -15,7 +15,7 @@ from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
 from openai import AsyncAzureOpenAI
-from openai.resources.embeddings import Embeddings
+from openai.resources.embeddings import Embeddings as OAI_Embeddings
 from pydantic import (BaseModel, ConfigDict, HttpUrl, ValidationError,
                       computed_field, root_validator)
 from pydantic_ai import Agent, RunContext
@@ -156,10 +156,34 @@ def download_file(url: str, headers: dict = None, verify: bool = True):
 # --------------------- Logging Setup ---------------------
 log = __import__("logging").getLogger(__name__)
 
+# --------------------- Model & Agent Setup ---------------------
+
+# Azure Setup
+azure_client = AsyncAzureOpenAI(
+    azure_endpoint=toolkit.config.get(
+        "ckanext.chat.completion_url", "https://your.chat.api"
+    ),
+    # api_version="2024-02-15-preview",
+    api_version="2024-06-01",
+    api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
+)
+deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
+model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
+
+# #Ollama setup
+# model = OpenAIModel(
+#     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
+#     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
+# )
+
+
 # --------------------- Milvus and CKAN Setup ---------------------
 
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
+embedding_model = toolkit.config.get("ckanext.chat.embedding_model", 'text-embedding-3-small')
+embedding_api = toolkit.config.get("ckanext.chat.embedding_api", azure_client.embeddings)
+
 vector_dim = None
 if milvus_url:
     milvus_client = MilvusClient(uri=milvus_url)
@@ -185,33 +209,14 @@ if milvus_url:
 else:
     milvus_client = None
 
-# --------------------- Model & Agent Setup ---------------------
-
-# Azure Setup
-azure_client = AsyncAzureOpenAI(
-    azure_endpoint=toolkit.config.get(
-        "ckanext.chat.completion_url", "https://your.chat.api"
-    ),
-    # api_version="2024-02-15-preview",
-    api_version="2024-06-01",
-    api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
-)
-deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
-model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
-
-# #Ollama setup
-# model = OpenAIModel(
-#     model_name=toolkit.config.get("ckanext.chat.deployment", "llama3.3"),
-#     provider=OpenAIProvider(base_url=toolkit.config.get("ckanext.chat.completion_url", "https://ollama.local/v1"))
-# )
-
 
 @dataclass
 class Deps:
     user_id: str
     milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
     openai: OpenAIModel = field(default_factory=lambda: model)
-    embeddings: Embeddings = field(default=azure_client.embeddings)
+    embeddings: Union[OAI_Embeddings, str] = field(default=embedding_api)
+    embedding_model: str = field(default_factory=lambda: embedding_model)
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
@@ -336,20 +341,25 @@ class LitSearchResult(BaseModel):
 
 rag_prompt = (
     "Role:\n\n"
-    "You are an assistant doing literature search be rephrasig questions and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
+    "You are an assistant doing literature search by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
     "Key Guidelines:\n\n"
-    "- when rephasing questions make sure to stay close to the context of the original input as much as possible. Search strings musst consist of 3 words minimum.\n"
+    "- the list of search strings must include the exactly original questions ask. rephasing questions is only allowed when not enough gut hits are retrieved. Search strings musst consist of 3 words minimum.\n"
     "- use the `rag_search` tool find hits for chunks of literature by passing a list of search strings.\n"
     "- beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
-    "- for all hits try to access the text and create  a joint result object per distinct source. it should include the title of the source, a summary why its relevant and the rest of the vector metadata."
+    "- for all hits try to access the text and create a joint result object if the hit entity has the same source url. it should include the title of the source, a summary why its relevant and the rest of the vector metadata. If you cannot retrieve the text of the source, discard the result."
     # "- to any hit you retrieve try to access the text and add the title of the document to a title field of the hit, by either retrieving it from the VectorMeta or the text and create markdown link in the form [title](url to document).\n\n"
     # "- to any hit you retrieve add a summary of its relevants to the summary field of the hit in less then 500 string length. If the hit does not provide the desired context, discard the hit!\n\n"
     "- make sure that u get at least 5 good results for the context that is in question by running the search again if no number of results is requested.\n\n"
     "- any error occuring return to the error field as strings.\n\n"
     "Your Toolset:\n\n"
-    "1. **Retrieve Documents:**\n"
+    "1. **Retrieve Document hits:**\n"
     "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
     "- **Purpose:** Performs a vector search on document chunks using a list of search strings.\n"
+    "5. **Download Resource Contents:**\n"
+    "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
+    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
+    "- **When to Use:** To fetch the contents of a file resource. If SSL verification fails, diaable verification and try again. Not down the evidence in the error field.\n\n"
+    
 )
 
 rag_agent = Agent(
@@ -549,12 +559,13 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
 
 
 @agent.tool_plain
+@rag_agent.tool_plain
 def get_resource_file_contents(
     resource_id: str,
     resource_url: str,
     max_token_length: int,
     skip_tokens: int = 0,
-    ssl_verify=True,
+    ssl_verify=False,
 ) -> str:
     """Retrieves the content of a resource stored in filetore, allows setting max token of output and skip tokens to extract a chunk
 
@@ -723,6 +734,30 @@ class LitSearchResult(BaseModel):
     hits: Optional[list[RagHit]] = None
     error: Optional[str] = None
 
+async def get_embedding(chunks: List[str], model: str, api_url, vector_dim: int):
+    if not isinstance(api_url,str):
+        # must be OAI embeddings
+        emb_r = await api_url.create(
+            input=chunks,
+            model=model,
+            dimensions=vector_dim
+        )
+        return [vec.embedding for vec in emb_r.data]
+    headers = {
+        'accept': 'application/json',
+        'Content-Type': 'application/json'
+    }
+    data = {
+        'chunks': chunks,
+        'model': model
+    }
+    response = requests.post(api_url, headers=headers, data=json.dumps(data),verify=False)
+    
+    if response.status_code == 200:
+        return response.json()['embeddings']
+    else:
+        return {'error': response.status_code, 'message': response.text}
+
 
 @rag_agent.tool
 async def rag_search(
@@ -741,12 +776,8 @@ async def rag_search(
     if not ctx.deps.milvus_client or not ctx.deps.embeddings:
         return "The Milvus Client was not setup properly, no rag_search supported in the moment."
     else:
-        emb_r = await ctx.deps.embeddings.create(
-            input=search_query,
-            model="text-embedding-3-small",
-            dimensions=ctx.deps.vector_dim,
-        )
-        query_vectors = [vec.embedding for vec in emb_r.data]
+        query_vectors= await get_embedding(search_query,model=ctx.deps.embedding_model,api_url=ctx.deps.embeddings, vector_dim=ctx.deps.vector_dim)
+        
         search_res = ctx.deps.milvus_client.search(
             collection_name=ctx.deps.collection_name,
             data=query_vectors,
