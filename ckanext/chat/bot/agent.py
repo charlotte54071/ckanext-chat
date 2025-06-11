@@ -17,7 +17,7 @@ from ckan.model.resource import Resource
 from openai import AsyncAzureOpenAI
 from openai.resources.embeddings import Embeddings as OAI_Embeddings
 from pydantic import (BaseModel, ConfigDict, HttpUrl, ValidationError,
-                      computed_field, root_validator)
+                      computed_field, root_validator, validator)
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
                                     ModelHTTPError, ModelRetry,
@@ -167,7 +167,12 @@ azure_client = AsyncAzureOpenAI(
     api_version="2024-06-01",
     api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
 )
-deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4-vision-preview")
+deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o-mini")
+rag_model_settings = OpenAIModelSettings(
+    model_name=deployment,
+    max_tokens=16384,
+    #openai_reasoning_effort= "low"
+)
 model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
 # #Ollama setup
@@ -243,6 +248,52 @@ def init_dynamic_models():
         dynamic_models_initialized = True
 
 
+# --------------------- Vector & RAG Models ---------------------
+
+
+class VectorMeta(BaseModel):
+    id: int
+    #chunk_id: Optional[int] = None
+    #chunks: Optional[HttpUrl] = None
+    dataset_id: Optional[str] = None
+    #dataset_url: Optional[HttpUrl] = None
+    #groups: Optional[list[str]] = None
+    #private: Optional[str] = None
+    resource_id: Optional[str] = None
+    source: Optional[HttpUrl] = None
+    #view_url: Optional[list[HttpUrl]] = None
+
+
+class RagHit(BaseModel):
+    id: int
+    distance: Optional[float] = None
+    entity: VectorMeta
+
+class SliceModel(BaseModel):
+    start: int
+    end: int
+
+
+class LitResult(BaseModel):
+    title: str = ""
+    summary: str = ""
+    authors: str = ""
+    source: Optional[HttpUrl] = None
+    slices: List[SliceModel]
+    # view_urls: Optional[list[HttpUrl]] = None
+    # @validator('view_urls', pre=True, always=True)
+    # def generate_view_urls(cls, v, values):
+    #     if 'source' in values and isinstance(values['slices'], list):
+    #         source_url = values['source']
+    #         return [f"{source_url}/highlight/{slice.start}/{slice.end}" for slice in values['slices']]
+    #     return []
+
+
+class LitSearchResult(BaseModel):
+    search_str: Optional[list[str]] = None
+    results: Optional[list[LitResult]] = None
+    error: Optional[List[str]] = None
+
 # --------------------- System Prompt & Agent ---------------------
 system_prompt = (
     "Role:\n\n"
@@ -253,7 +304,9 @@ system_prompt = (
     "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
     "- For general dataset searches and overviews, prioritize using action nameed `package_search`. Run the package_search action with an parameter q="
     ", to fetch all datasets.\n"
-    "- For more detailed document searches, try `literature_search` first; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
+    "- For more detailed document searches, try `literature_search` first, using num_results=5 by default; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
+    "- You must highlighting relevant parts in documents like slices! Dynamically look up the URL pattern for the by caling the get_ckan_url_patterns tool with the argument endpoint='markdown_view.highlight'. Then, create view URLs for the slices returned by utilizing this retrieved URL pattern along with the corresponding dataset ID, resource ID, and slice parameters start and end.\n\n"
+    "- If no specific relevant part of the documents is known, dynamically look up the URL pattern for the by caling the get_ckan_url_patterns tool with the argument endpoint='markdown_view.markdown'. Then, create view URLs by utilizing this retrieved URL pattern along with the corresponding dataset ID, resource ID.\n\n"
     "- Ensure you select the appropriate tool based on the user's request and the available capabilities.\n\n"
     "Your Toolset:\n\n"
     "1. **List CKAN Actions:**\n"
@@ -301,65 +354,23 @@ from datetime import datetime
 from uuid import UUID
 
 
-class MyBaseModel(BaseModel):
-    model_config = ConfigDict(
-        from_attributes=True,  # allows .model_dump to work with ORM-style objects
-        json_encoders={
-            UUID: str,
-            HttpUrl: str,
-            datetime: lambda dt: dt.isoformat(),  # or str(dt)
-        },
-    )
-
-
-class VectorMeta(MyBaseModel):
-    id: int
-    chunk_id: Optional[int] = None
-    chunks: Optional[HttpUrl] = None
-    dataset_id: Optional[str] = None
-    dataset_url: Optional[HttpUrl] = None
-    groups: Optional[list[str]] = None
-    private: Optional[str] = None
-    resource_id: Optional[str] = None
-    source: Optional[HttpUrl] = None
-    view_url: Optional[list[HttpUrl]] = None
-
-
-class RagHit(BaseModel):
-    id: int
-    distance: Optional[float] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    entity: VectorMeta
-
-
-class LitSearchResult(BaseModel):
-    search_str: Optional[list[str]] = None
-    results: Optional[list] = None
-    error: Optional[list[str]] = None
-
-
 rag_prompt = (
     "Role:\n\n"
     "You are an assistant doing literature search by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
     "Key Guidelines:\n\n"
-    "- the list of search strings must include the exactly original questions ask. rephasing questions is only allowed when not enough gut hits are retrieved. Search strings musst consist of 3 words minimum.\n"
-    "- use the `rag_search` tool find hits for chunks of literature by passing a list of search strings.\n"
+    "- start by using rag_search with exactly the original questions passing also the double the number of hits we aim for as limit.\n\n"
+    "- Create LitResult objects by aggregating RagHits by the same source property. Count the number of valid LitResults. If the number of LitResult s does not match the number of results requested, you must run the rag_search again by rephasing questions, but stay as close as possible to the context of the original question, till the necessary number of results is reached. If you fail to reach this goal, name the reason and add it to the error field.\n\n"
     "- beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
-    "- for all hits try to access the text and create a joint result object if the hit entity has the same source url. it should include the title of the source, a summary why its relevant and the rest of the vector metadata. If you cannot retrieve the text of the source, discard the result."
-    # "- to any hit you retrieve try to access the text and add the title of the document to a title field of the hit, by either retrieving it from the VectorMeta or the text and create markdown link in the form [title](url to document).\n\n"
-    # "- to any hit you retrieve add a summary of its relevants to the summary field of the hit in less then 500 string length. If the hit does not provide the desired context, discard the hit!\n\n"
-    "- make sure that u get at least 5 good results for the context that is in question by running the search again if no number of results is requested.\n\n"
-    "- any error occuring return to the error field as strings.\n\n"
+    #"- results must include the title of the source as markdown link to the view of the markdown file url mentioned in hit[entity][source], a summary why its relevant. And the authors of the document.\n\n"
+    "- results should include the relevant markdown sections for the questions asked as slices, there should be on slice definition for each chunk in the processed hits.\n\n"
     "Your Toolset:\n\n"
     "1. **Retrieve Document hits:**\n"
-    "- **Function:** `rag_search(search_query: List[str]) -> List[RagHit]`\n"
-    "- **Purpose:** Performs a vector search on document chunks using a list of search strings.\n"
-    "5. **Download Resource Contents:**\n"
+    "- **Function:** `rag_search(search_query: List[str], limit: int = 3) -> List[RagHit]`\n"
+    "- **Purpose:** Performs a vector search on document chunks using a list of search strings. Results limit can be set by limit parameter\n"
+    "2. **Download Resource Contents:**\n"
     "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
     "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
-    "- **When to Use:** To fetch the contents of a file resource. If SSL verification fails, diaable verification and try again. Not down the evidence in the error field.\n\n"
-    
+    "- **When to Use:** To fetch the contents of a file resource. If SSL verification fails, diaable verification and try again. Not down the evidence in the error field.\n\n"    
 )
 
 rag_agent = Agent(
@@ -368,6 +379,7 @@ rag_agent = Agent(
     output_type=LitSearchResult,
     system_prompt="".join(rag_prompt),
     retries=3,
+    model_settings=rag_model_settings,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
@@ -455,7 +467,7 @@ routes: Dict[str, RouteModel] = {}
 
 @agent.tool_plain
 def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
-    """Get URL Flask Blueprint routes to views in CKAN
+    """Get URL Flask Blueprint routes to views in CKAN if the argument endpoint is None or empty it wil return a list of endpoints. If set to an endpoint it will return the RouteModel containing arguements and the pattern to create the url.
 
     Args:
         endpoint (str, optional): If empty returns a list of all possible endpoints. If set returns the details of the endpoint. Defaults to "".
@@ -707,32 +719,6 @@ def exception_to_model_response(exc: Exception) -> ModelResponse:
     )
 
 
-# --------------------- Vector & RAG Models ---------------------
-
-
-class VectorMeta(BaseModel):
-    id: int
-    chunk_id: Optional[int] = None
-    chunks: Optional[HttpUrl] = None
-    dataset_id: Optional[str] = None
-    dataset_url: Optional[HttpUrl] = None
-    groups: Optional[list[str]] = None
-    private: Optional[str] = None
-    resource_id: Optional[str] = None
-    source: Optional[HttpUrl] = None
-    view_url: Optional[list[HttpUrl]] = None
-
-
-class RagHit(BaseModel):
-    id: int
-    distance: Optional[float] = None
-    entity: VectorMeta
-
-
-class LitSearchResult(BaseModel):
-    search_str: Optional[list[str]] = None
-    hits: Optional[list[RagHit]] = None
-    error: Optional[str] = None
 
 async def get_embedding(chunks: List[str], model: str, api_url, vector_dim: int):
     if not isinstance(api_url,str):
@@ -771,39 +757,47 @@ async def rag_search(
         limit (int, optional): Limit for amount of Hits to be returned for the serach. Defaults to 3.
 
     Returns:
-        List[RagHit]: List of RagHit instances as a reult of rag search. the object provided a distance attribute with the metrics of similarity and an entity attribute containing the meta data of the vector entity in store.
+        List[RagHit]: List of RagHit instances as a result of rag search. the object provided a distance attribute with the metrics of similarity and an entity attribute containing the meta data of the vector entity in store.
     """
     if not ctx.deps.milvus_client or not ctx.deps.embeddings:
         return "The Milvus Client was not setup properly, no rag_search supported in the moment."
     else:
         query_vectors= await get_embedding(search_query,model=ctx.deps.embedding_model,api_url=ctx.deps.embeddings, vector_dim=ctx.deps.vector_dim)
+        num_results=0
+        hits = []
+        filter_ids=[]
+        while num_results <limit:
+            log.debug(f"{search_query} filtered by: {filter_ids}")
+            search_res = ctx.deps.milvus_client.search(
+                collection_name=ctx.deps.collection_name,
+                data=query_vectors,
+                search_params={"metric_type": "COSINE", "params": {"level": 1}},
+                limit=6,
+                filter_params = {"ids": filter_ids} if filter_ids else None,
+                filter="id not in {ids}"if filter_ids else None,
+                output_fields=list(VectorMeta.__fields__.keys()),
+                consistency_level="Bounded",
+            )
+            if search_res:
+                for i in range(len(query_vectors)):
+                    hit = [RagHit(**item) for item in search_res[i]]
+                    hits += hit
+                    filter_ids+= list(set(hit.id for hit in hits))
+                    log.debug(hits)
+                distinct_sources = list(set(hit.entity.source for hit in hits))
+                num_results=len(distinct_sources)
+                log.debug(f"Rag search for:{search_query} with limit: {limit} returned {num_results} results.")
+        return hits
         
-        search_res = ctx.deps.milvus_client.search(
-            collection_name=ctx.deps.collection_name,
-            data=query_vectors,
-            search_params={"metric_type": "COSINE", "params": {"level": 1}},
-            limit=limit,
-            output_fields=list(VectorMeta.__fields__.keys()),
-            consistency_level="Bounded",
-        )
-        if search_res:
-            hits = []
-            for i in range(len(query_vectors)):
-                hit = [RagHit(**item) for item in search_res[i]]
-                log.debug(hit)
-                hits += hit
-            return hits
-        else:
-            return []
 
 
 @agent.tool
-async def literature_search(ctx: RunContext[Deps], search_question: str) -> list[str]:
+async def literature_search(ctx: RunContext[Deps], search_question: str, num_results: int=5) -> list[str]:
     r = await rag_agent.run(
-        f"{search_question}.",
-        deps=ctx.deps,
+        f"Search for documents using thiss question:{search_question}. You must return {num_results} results",
+        deps=ctx.deps, usage_limits=UsageLimits(request_limit=10),
     )
-    # log.debug(r.data)
+    log.debug(r.data)
     return r.data.json()
 
 
