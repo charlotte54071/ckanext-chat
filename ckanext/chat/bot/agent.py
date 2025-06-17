@@ -11,6 +11,7 @@ import ckan.plugins.toolkit as toolkit
 import nest_asyncio
 import requests
 import tiktoken
+import regex
 from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
@@ -46,6 +47,9 @@ def truncate_output_by_token(
         # Skip the specified number of tokens
         truncated_tokens = tokens[skip_tokens : skip_tokens + token_limit]
         output = encoding.decode(truncated_tokens)
+        #if last page of tokens, add a mark
+        if len(truncated_tokens)<token_limit:
+            output += "\n\n**End of Output**"
 
     return output
 
@@ -269,9 +273,9 @@ class RagHit(BaseModel):
     distance: Optional[float] = None
     entity: VectorMeta
 
-class SliceModel(BaseModel):
-    start: int
-    end: int
+# class SliceModel(BaseModel):
+#     start: int
+#     end: int
 
 
 class LitResult(BaseModel):
@@ -279,7 +283,7 @@ class LitResult(BaseModel):
     summary: str = ""
     authors: str = ""
     source: Optional[HttpUrl] = None
-    slices: List[SliceModel]
+    #slices: List[SliceModel]
     # view_urls: Optional[list[HttpUrl]] = None
     # @validator('view_urls', pre=True, always=True)
     # def generate_view_urls(cls, v, values):
@@ -290,54 +294,57 @@ class LitResult(BaseModel):
 
 
 class LitSearchResult(BaseModel):
+    answer: str = ""
     search_str: Optional[list[str]] = None
     results: Optional[list[LitResult]] = None
     error: Optional[List[str]] = None
 
 # --------------------- System Prompt & Agent ---------------------
+
 system_prompt = (
     "Role:\n\n"
-    "You are an assistant to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
+    "You are an assistant to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of thought right away. Reduce Thinking output to a minimum.\n"
     "Key Guidelines:\n\n"
-    "- You *must* use `get_action_info` on any action you want to run to understand the action and its arguments. After ur instrcuted to run the action immediately to try it.\n"
+    "- Always create highlighted view URLs for key findings in your answers based on the sections retrieved from documents. Utilize the `get_ckan_url_patterns` tool to obtain the URL patterns for constructing these links.\n"
+    "- To Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
+    "- Ensure that you present these URLs in a clear and organized manner, directly linking to the relevant sections of the documents.\n"
+    "\n"
     "- For update or patch actions, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
     "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
-    "- For general dataset searches and overviews, prioritize using action nameed `package_search`. Run the package_search action with an parameter q="
-    ", to fetch all datasets.\n"
-    "- For more detailed document searches, try `literature_search` first, using num_results=5 by default; if it indicates that the milvus client is not set up, switch to `package_search`.\n"
-    "- You must highlighting relevant parts in documents like slices! Dynamically look up the URL pattern for the by caling the get_ckan_url_patterns tool with the argument endpoint='markdown_view.highlight'. Then, create view URLs for the slices returned by utilizing this retrieved URL pattern along with the corresponding dataset ID, resource ID, and slice parameters start and end.\n\n"
-    "- If no specific relevant part of the documents is known, dynamically look up the URL pattern for the by caling the get_ckan_url_patterns tool with the argument endpoint='markdown_view.markdown'. Then, create view URLs by utilizing this retrieved URL pattern along with the corresponding dataset ID, resource ID.\n\n"
-    "- Ensure you select the appropriate tool based on the user's request and the available capabilities.\n\n"
+    "- For general dataset searches and overviews, prioritize using the `package_search` action with parameter q= to fetch all datasets.\n"
+    "- If you output links try to use CKAN URL patterns if possible and prefer them over download URLs because they have views rendering the content for the user.\n"
+    "- If you need to lookup literature, try the `literature_search`.\n"
+    "- Ensure you select the appropriate tool based on the user's request and available capabilities.\n"
+    "\n"
     "Your Toolset:\n\n"
     "1. **List CKAN Actions:**\n"
-    "- **Function:** `get_ckan_actions() -> List[str]`\n"
-    "- **Purpose:** Retrieves a complete list of available CKAN action by name.\n"
-    "- **When to Use:** When you need an overview of potential actions.\n\n"
+    "   - **Function:** `get_ckan_actions() -> List[str]`\n"
+    "   - **Purpose:** Retrieves a complete list of available CKAN actions by name.\n"
+    "\n"
     "2. **Get Function Information:**\n"
-    "- **Function:** `get_action_info(action_key: str) -> dict`\n"
-    "- **Purpose:** Provides detailed information (signature and documentation) for a specified CKAN action.\n"
-    "- **When to Use:** Always use this first before executing any action.\n\n"
+    "   - **Function:** `get_action_info(action_key: str) -> dict`\n"
+    "   - **Purpose:** Provides detailed information for a specified CKAN action.\n"
+    "\n"
     "3. **Execute CKAN Action:**\n"
-    "- **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "- **Purpose:** Executes a specified CKAN action with provided parameters.\n"
-    "- **When to Use:** When a user's request requires running an action within CKAN. For update or patch actions, present the proposed changes to the user and obtain confirmation before executing.\n\n"
+    "   - **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
+    "   - **Purpose:** Executes a specified CKAN action with provided parameters.\n"
+    "\n"
     "4. **Retrieve CKAN URL Patterns:**\n"
-    "- **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
-    "- **Purpose:** Fetches all URL patterns in CKAN, including endpoints, URL rules, and allowed HTTP methods.\n"
-    "- **When to Use:** When you need an overview of the available routes. Use it to enhance ur output by creating links.\n\n"
+    "   - **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
+    "   - **Purpose:** Fetches all URL patterns in CKAN.\n"
+    "\n"
     "5. **Download Resource Contents:**\n"
-    "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
-    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
-    "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
+    "   - **Function:** `get_resource_file_contents`\n"
+    "   - **Purpose:** Retrieves file content from CKAN or external sources.\n"
+    "\n"
     "6. **Retrieve Documents:**\n"
-    "- **Function:** `literature_search: str) -> List[str]`\n"
-    "- **Purpose:** Performs a literature search on documents by the question you ask. Mention the number of hits you want to have as return.\n"
-    "- **When to Use:**\n"
-    "   - For in-depth document searches.\n"
-    "   - If `literature_search` indicates that the milvus client is not set up, then use `package_search` instead.\n"
-    "   - For general dataset searches or overviews, prefer `package_search`.\n"
+    "   - **Function:** `literature_search(search_question: str, num_results: int=5) -> list[str]`\n"
+    "   - **Purpose:** Performs a literature search.\n"
+    "\n"
+    "7. **Index of Text Parts:**\n"
+    "   - **Function:** `find_text_slice_offsets`\n"
+    "   - **Purpose:** Finds start_str and end_str that follows start_str.\n"
 )
-
 
 agent = Agent(
     model=model,
@@ -356,21 +363,31 @@ from uuid import UUID
 
 rag_prompt = (
     "Role:\n\n"
-    "You are an assistant doing literature search by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away. Reduce Thinking output to a minimum.\n"
+    "You are an assistant doing literature research by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away.\n"
     "Key Guidelines:\n\n"
-    "- start by using rag_search with exactly the original questions passing also the double the number of hits we aim for as limit.\n\n"
+    "- Lookup literature, by 'rag_search'. If it indicates that the Milvus client is not set up, switch to `package_search` with search_str.\n"
+    "- Start by using rag_search with exactly the original questions passing also the double the number of hits we aim for as limit.\n\n"
     "- Create LitResult objects by aggregating RagHits by the same source property. Count the number of valid LitResults. If the number of LitResult s does not match the number of results requested, you must run the rag_search again by rephasing questions, but stay as close as possible to the context of the original question, till the necessary number of results is reached. If you fail to reach this goal, name the reason and add it to the error field.\n\n"
-    "- beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
-    #"- results must include the title of the source as markdown link to the view of the markdown file url mentioned in hit[entity][source], a summary why its relevant. And the authors of the document.\n\n"
-    "- results should include the relevant markdown sections for the questions asked as slices, there should be on slice definition for each chunk in the processed hits.\n\n"
+    "- Beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
+    "- Access the LitResult documents and formulate a comprehensive answer. Update the LitResult objects adding the title, authors and a summary why its relevant to the answer you formulated.\n\n"
+    "- Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
     "Your Toolset:\n\n"
     "1. **Retrieve Document hits:**\n"
-    "- **Function:** `rag_search(search_query: List[str], limit: int = 3) -> List[RagHit]`\n"
+    "- **Function:** `rag_search`\n"
     "- **Purpose:** Performs a vector search on document chunks using a list of search strings. Results limit can be set by limit parameter\n"
     "2. **Download Resource Contents:**\n"
-    "- **Function:** `get_resource_file_contents(resource_id: str, resource_url: str, max_token_length: int, skip_tokens: int=0, ssl_verify=True) -> str`\n"
+    "- **Function:** `get_resource_file_contents`\n"
     "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
-    "- **When to Use:** To fetch the contents of a file resource. If SSL verification fails, diaable verification and try again. Not down the evidence in the error field.\n\n"    
+    "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
+    "3. **Index of Text Parts:**\n"
+    "- **Function:** `find_text_slice_offsets`\n"
+    "- **Purpose:** Finds start_str and end_str that follows start_str and will return the character index of that slice inside the text of the resource, counting from top of document. Use exact short strings 10-20 characters of start and end of the paragraph in scope that must be part of the original text.\n"
+    "- **When to Use:**\n"
+    "   - For pointing to text parts.\n"
+    "3. **Execute CKAN 'package_search' Action:**\n"
+    "   - **Function:** `run_action(action_name: 'package_search', parameters: {'q': search_str}) -> dict`\n"
+    "   - **Purpose:** Executes a specified CKAN action with provided parameters.\n"
+    "\n"
 )
 
 rag_agent = Agent(
@@ -508,8 +525,8 @@ def get_ckan_actions() -> List[str]:
         List[str]: List of names of CKAN actions
     """
     from ckan.logic import _actions
-
-    return [key for key in _actions.keys()]
+    actions=[key for key in _actions.keys() if not "_update" in key]
+    return actions
 
 
 @agent.tool_plain
@@ -529,6 +546,7 @@ def get_action_info(action_key: str) -> dict:
 
 
 @agent.tool
+@rag_agent.tool
 def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
     """Run CKAN actions basd on the action name and parameters as a dict.
 
@@ -575,7 +593,7 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
 def get_resource_file_contents(
     resource_id: str,
     resource_url: str,
-    max_token_length: int,
+    max_token_length: int = 2000,
     skip_tokens: int = 0,
     ssl_verify=False,
 ) -> str:
@@ -584,10 +602,15 @@ def get_resource_file_contents(
     Args:
         resource_id (str): The UUID of the CKAN resource
         resource_url (str): The download url of the CKAN resource
-        max_token_length (int): the maximum length of the string to return
+        max_token_length (int): the maximum length of the string to return, default 2000
         skip_tokens (int): ommits the token length given from start of the contents, to retrieve a chunk
     Returns:
-        str: the content of the file retrieved
+        str: the raw string content of the file retrieved
+    Pagination Instructions:
+        - Use the `skip_tokens` parameter to skip a certain number of tokens (words) from the start of the document.
+        - If you want to retrieve specific chunks of the content, you can adjust the `max_token_length` accordingly.
+        - To paginate through the document, call this function multiple times with increasing values for `skip_tokens`.
+        - When the end of the document is reached, the output will include "End of Document" to indicate that there are no more contents to retrieve.
     """
     ckan_url = toolkit.config.get("ckan.site_url")
     if ckan_url in resource_url:
@@ -610,20 +633,89 @@ def get_resource_file_contents(
         try:
             with open(file_path, "r") as file:
                 contents = file.read()
-            return truncate_output_by_token(
-                contents, token_limit=max_token_length, skip_tokens=skip_tokens
-            )
         except FileNotFoundError:
             return "File not found."
         except Exception as e:
             return str(e)
     else:
+        contents=download_file(resource_url, verify=ssl_verify)
+    if max_token_length:
         return truncate_output_by_token(
-            download_file(resource_url, verify=ssl_verify),
-            token_limit=max_token_length,
-            skip_tokens=skip_tokens,
-        )
+                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
+                )
+    else:
+        return contents
 
+@agent.tool_plain
+@rag_agent.tool_plain
+def find_text_slice_offsets(resource_id: str,
+                            resource_url: str,
+                            start_str: str,
+                            end_str: str,
+                            ssl_verify=False,
+                            threshold: float = 0.8,
+                            ) -> tuple[int, int] | str:
+    """
+    Find the character offsets of a substring within a given text,
+    allowing for up to a certain % of insertions/deletions/substitutions.
+
+    Args:
+        resource_id (str): The UUID of the CKAN resource
+        resource_url (str): The download URL of the CKAN resource
+        start_str (str): Approximate start marker (10–20 chars)
+        end_str (str): Approximate end marker (10–20 chars)
+        ssl_verify (bool): Whether to verify SSL certificates
+        threshold (float): Similarity threshold (0–1)
+
+    Returns:
+        (start_offset, end_offset) on success, or an error message.
+    """
+    text = get_resource_file_contents(resource_id, resource_url, ssl_verify=ssl_verify)
+    log.debug(f"Loaded text of length {len(text)}")
+
+    # Work in lowercase for case‐insensitive matching
+    text_lower = text.lower()
+    start_pat = re.escape(start_str.lower())
+    end_pat   = re.escape(end_str.lower())
+
+    def fuzzy_search(pat: str, haystack: str) -> tuple[str, int]:
+        """
+        Use regex fuzzy matching: allow up to max_errors
+        """
+        # Compute max number of allowed errors
+        span=len(pat)*1.5
+        max_err = int((1 - threshold) * span)
+
+        # Escape the pattern and replace spaces with flexible space/punctuation
+        flexible_space = r'[\s\W]{1,5}'
+        escaped = re.escape(pat).replace(r'\ ', flexible_space)
+
+        # Build the fuzzy regex pattern using regex fuzzy syntax {e<=N}
+        fuzzy_pattern = f"({escaped})" + fr"{{e<={max_err}}}"
+         # Perform fuzzy search with BESTMATCH (returns closest match)
+        m = regex.search(fuzzy_pattern, haystack, flags=regex.BESTMATCH | regex.IGNORECASE)
+        #log.debug(m)
+        if not m:
+            return "", -1, -1
+        return m.group(1), m.start(1),m.end(1)
+
+    # 1) Find start marker
+    best_start, start_idx, start_idx_end = fuzzy_search(start_pat, text_lower)
+    if start_idx < 0:
+        return "Start string not found within the similarity threshold."
+
+    # 2) Find end marker *after* the start match
+    suffix = text_lower[start_idx + len(best_start):]
+    best_end, rel_end_idx, rel_end_idx_end = fuzzy_search(end_pat, suffix)
+    if rel_end_idx < 0:
+        rel_end_idx=start_idx_end+1000
+        #return "End string not found within the similarity threshold."
+
+    # Convert relative to absolute coordinates, and include the end marker
+    abs_end_idx = start_idx + len(best_start) + rel_end_idx + len(best_end)
+
+    log.debug(f"Matched '{best_start}' at {start_idx}, '{best_end}' at {abs_end_idx-len(best_end)}")
+    return (start_idx, abs_end_idx)
 
 class FuncSignature(BaseModel):
     doc: Any
