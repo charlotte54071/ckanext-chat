@@ -760,16 +760,15 @@ def fuzzy_search(pattern: str, text: str, threshold: float = 0.8) -> tuple[str, 
 
     return match.group(1), match.start(1), match.end(1)
 
-@agent.tool
-@rag_agent.tool
 @doc_agent.tool
 def find_text_slice_offsets(ctx: RunContext[TextSlice],
                             start_str: str,
                             end_str: str,
                             threshold: float = 0.8) -> tuple[int, int] | str:
-    text=ctx.text
-    offset=ctx.offset
-    slice_length=ctx.length
+    log.debug(ctx)
+    text=ctx.deps.text
+    offset=ctx.deps.offset
+    slice_length=ctx.deps.length
     start_match, start_idx, start_end_idx = fuzzy_search(start_str, text, threshold)
     if start_idx < 0:
         log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
