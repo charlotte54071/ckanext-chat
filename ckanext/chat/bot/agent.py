@@ -655,7 +655,7 @@ async def get_resource_file_contents(
     resource_url: str,
     offset: int,
     max_length: int=0,
-    ssl_verify=False,
+    ssl_verify=True,
 ) -> str:
     """Retrieves the content of a resource stored in filetore, allows setting max_length of output and offset to extract a slice of content
 
@@ -767,9 +767,9 @@ def find_text_slice_offsets(ctx: RunContext[TextSlice],
                             start_str: str,
                             end_str: str,
                             threshold: float = 0.8) -> tuple[int, int] | str:
-    text=ctx.deps.text
-    offset=ctx.deps.offset
-    slice_length=ctx.deps.length
+    text=ctx.text
+    offset=ctx.offset
+    slice_length=ctx.length
     start_match, start_idx, start_end_idx = fuzzy_search(start_str, text, threshold)
     if start_idx < 0:
         log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
