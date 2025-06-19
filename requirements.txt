@@ -5,3 +5,5 @@ nest_asyncio
 pymilvus==2.5.5
 tiktoken
 regex
+aiofiles
+aiohttp[speedups]

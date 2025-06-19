@@ -1,4 +1,6 @@
 import asyncio
+import aiofiles
+import aiohttp
 import json
 import os
 import re
@@ -12,6 +14,7 @@ import nest_asyncio
 import requests
 import tiktoken
 import regex
+
 from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
@@ -34,18 +37,33 @@ from pymilvus import MilvusClient
 # Allow nested event loops.
 nest_asyncio.apply()
 
+import logfire
+
+os.environ['OTEL_EXPORTER_OTLP_ENDPOINT'] = 'http://docker-dev.iwm.fraunhofer.de:4318'  
+# logfire.configure(send_to_logfire=False)  
+# logfire.instrument_pydantic_ai()
+# logfire.instrument_httpx(capture_all=True)
 # --------------------- Helper Functions ---------------------
 
 
+import asyncio
+import os
+from flask import Flask, request, jsonify
+from pydantic_ai import Agent, RunContext
+import aiofiles
+
+app = Flask(__name__)
+
+
 def truncate_output_by_token(
-    output: str, token_limit: int, skip_tokens: int = 0, encoding_name="cl100k_base"
+    output: str, token_limit: int, offset: int = 0, encoding_name="cl100k_base"
 ) -> str:
     encoding = tiktoken.get_encoding(encoding_name)
     tokens = encoding.encode(output)
 
     if len(tokens) > token_limit:
         # Skip the specified number of tokens
-        truncated_tokens = tokens[skip_tokens : skip_tokens + token_limit]
+        truncated_tokens = tokens[offset : offset + token_limit]
         output = encoding.decode(truncated_tokens)
         #if last page of tokens, add a mark
         if len(truncated_tokens)<token_limit:
@@ -220,6 +238,24 @@ else:
 
 
 @dataclass
+class TextSlice:
+    text: str
+    offset: int
+    length: int
+
+@dataclass
+class TextResource:
+    url: HttpUrl=None
+    text: Optional[str] = field(init=False, default=None)
+    
+    def extract_substring(self, offset: int, length: int) -> str:
+        if self.text is None:
+            raise ValueError("Text not loaded")
+        text_slice=self.text[offset:offset + length]
+        return TextSlice(text=text_slice,offset=offset,length=len(text_slice))
+
+    
+@dataclass
 class Deps:
     user_id: str
     milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
@@ -229,7 +265,7 @@ class Deps:
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
-
+    file: TextResource = None
 
 # --------------------- Dynamic Models Initialization ---------------------
 
@@ -265,7 +301,7 @@ class VectorMeta(BaseModel):
     #private: Optional[str] = None
     resource_id: Optional[str] = None
     source: Optional[HttpUrl] = None
-    #view_url: Optional[list[HttpUrl]] = None
+    view_url: Optional[list[HttpUrl]] = None
 
 
 class RagHit(BaseModel):
@@ -273,24 +309,12 @@ class RagHit(BaseModel):
     distance: Optional[float] = None
     entity: VectorMeta
 
-# class SliceModel(BaseModel):
-#     start: int
-#     end: int
-
-
 class LitResult(BaseModel):
     title: str = ""
     summary: str = ""
     authors: str = ""
     source: Optional[HttpUrl] = None
-    #slices: List[SliceModel]
-    # view_urls: Optional[list[HttpUrl]] = None
-    # @validator('view_urls', pre=True, always=True)
-    # def generate_view_urls(cls, v, values):
-    #     if 'source' in values and isinstance(values['slices'], list):
-    #         source_url = values['source']
-    #         return [f"{source_url}/highlight/{slice.start}/{slice.end}" for slice in values['slices']]
-    #     return []
+    view_url: Optional[list[HttpUrl]] = None
 
 
 class LitSearchResult(BaseModel):
@@ -305,15 +329,17 @@ system_prompt = (
     "Role:\n\n"
     "You are an assistant to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of thought right away. Reduce Thinking output to a minimum.\n"
     "Key Guidelines:\n\n"
-    "- Always create highlighted view URLs for key findings in your answers based on the sections retrieved from documents. Utilize the `get_ckan_url_patterns` tool to obtain the URL patterns for constructing these links.\n"
-    "- To Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
+    "- Always present view URLs for resources you present. Utilize the `get_ckan_url_patterns` tool to obtain the URL patterns for constructing these links.\n"
+    "- For highlighting text in documents, use the specific `markdown_view.highlight` URL pattern. The pattern is `/dataset/<pkg_id>/resource/<id>/highlight/<int:start>/<int:end>`.\n"
+    "- Prefer view URLs for CKAN resources over download URLs, find them by action 'resource_view_list'.\n"
     "- Ensure that you present these URLs in a clear and organized manner, directly linking to the relevant sections of the documents.\n"
     "\n"
     "- For update or patch actions, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
     "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
-    "- For general dataset searches and overviews, prioritize using the `package_search` action with parameter q= to fetch all datasets.\n"
-    "- If you output links try to use CKAN URL patterns if possible and prefer them over download URLs because they have views rendering the content for the user.\n"
-    "- If you need to lookup literature, try the `literature_search`.\n"
+    "- For general dataset searches and overviews, prioritize using the `package_search` action with parameter q= to fetch all datasets add parameter include_private=true to also list private datasets.\n"
+    "- If you output links, ensure you use CKAN URL patterns and highlight formatting where necessary.\n"
+    "- If you need to look up literature, try the `literature_search`. Only use it if no resource is mentioned.\n"
+    "- If you need to find relevant parts in documents run get_resource_file_contents with a download url once, the resource will be available as long as you dont use get_resource_file_contents again. Then run 'literature_analyse'. Use 'offset' and 'max_length' parameter to analyze substrings of the document[offset:max_length]. If you ommit max_length the whole text will be loaded at once.\n"
     "- Ensure you select the appropriate tool based on the user's request and available capabilities.\n"
     "\n"
     "Your Toolset:\n\n"
@@ -335,15 +361,17 @@ system_prompt = (
     "\n"
     "5. **Download Resource Contents:**\n"
     "   - **Function:** `get_resource_file_contents`\n"
-    "   - **Purpose:** Retrieves file content from CKAN or external sources.\n"
+    "   - **Purpose:** Retrieves file content from CKAN or external sources and makes it permanent availbale to tools, as long as not run again.\n"
+    "   - **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
     "\n"
     "6. **Retrieve Documents:**\n"
     "   - **Function:** `literature_search(search_question: str, num_results: int=5) -> list[str]`\n"
     "   - **Purpose:** Performs a literature search.\n"
     "\n"
-    "7. **Index of Text Parts:**\n"
-    "   - **Function:** `find_text_slice_offsets`\n"
-    "   - **Purpose:** Finds start_str and end_str that follows start_str.\n"
+    "7. **Analyse Document:**\n"
+    "   - **Function:** `literature_analyse(question: str, offset: int, max_length: int) -> list[str]`\n"
+    "   - **Pagination:** To iterate through content you must increase the offset parameter by the amount of max_length of the previous call.\n"
+    "   - **Purpose:** Reads a document part already loaded and analyzes it concerning the question asked.\n"
 )
 
 agent = Agent(
@@ -366,24 +394,19 @@ rag_prompt = (
     "You are an assistant doing literature research by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away.\n"
     "Key Guidelines:\n\n"
     "- Lookup literature, by 'rag_search'. If it indicates that the Milvus client is not set up, switch to `package_search` with search_str.\n"
-    "- Start by using rag_search with exactly the original questions passing also the double the number of hits we aim for as limit.\n\n"
+    "- Start by using rag_search with exactly the original questions passing 'num_result' of hits we aim for as limit.\n\n"
     "- Create LitResult objects by aggregating RagHits by the same source property. Count the number of valid LitResults. If the number of LitResult s does not match the number of results requested, you must run the rag_search again by rephasing questions, but stay as close as possible to the context of the original question, till the necessary number of results is reached. If you fail to reach this goal, name the reason and add it to the error field.\n\n"
     "- Beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
     "- Access the LitResult documents and formulate a comprehensive answer. Update the LitResult objects adding the title, authors and a summary why its relevant to the answer you formulated.\n\n"
-    "- Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
     "Your Toolset:\n\n"
     "1. **Retrieve Document hits:**\n"
     "- **Function:** `rag_search`\n"
     "- **Purpose:** Performs a vector search on document chunks using a list of search strings. Results limit can be set by limit parameter\n"
     "2. **Download Resource Contents:**\n"
     "- **Function:** `get_resource_file_contents`\n"
-    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using token parameters.\n"
+    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using offset and max_length parameters.\n"
+    "- **Pagination:** To iter trough content you must increase the offset parameter by the amount of max_length of the previous call.\n"
     "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
-    "3. **Index of Text Parts:**\n"
-    "- **Function:** `find_text_slice_offsets`\n"
-    "- **Purpose:** Finds start_str and end_str that follows start_str and will return the character index of that slice inside the text of the resource, counting from top of document. Use exact short strings 10-20 characters of start and end of the paragraph in scope that must be part of the original text.\n"
-    "- **When to Use:**\n"
-    "   - For pointing to text parts.\n"
     "3. **Execute CKAN 'package_search' Action:**\n"
     "   - **Function:** `run_action(action_name: 'package_search', parameters: {'q': search_str}) -> dict`\n"
     "   - **Purpose:** Executes a specified CKAN action with provided parameters.\n"
@@ -395,6 +418,41 @@ rag_agent = Agent(
     deps_type=Deps,
     output_type=LitSearchResult,
     system_prompt="".join(rag_prompt),
+    retries=3,
+    model_settings=rag_model_settings,
+    # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
+)
+
+class SliceModel(BaseModel):
+    start: int
+    end: int
+
+
+class AnalyseResult(BaseModel):
+    answer: str = ""
+    text_slices: Optional[list[SliceModel]] = None
+    error: Optional[List[str]] = None
+
+doc_analyse_prompt = (
+    "Role:\n\n"
+    "You are an assistant analysing scientific documents by the question you were ask.\n"
+    "Key Guidelines:\n\n"
+    "- Find the charcter indexes of start and end of the passage by using 'find_text_slice_offsets'. You have to use very close matching sub strings o the document text or it will fail.\n\n"
+    "- You must add all relevant passages to the list of 'text_slices' add 'offset' to the tuple returned by 'find_text_slice_offsets' the get the absolute index.\n\n"
+    "- Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
+    "Your Toolset:\n\n"
+    "1. **Index of Text Parts:**\n"
+    "- **Function:** `find_text_slice_offsets`\n"
+    "- **Purpose:** Finds start_str substring and end_str substring that follows start_str and will return the character index of that slice inside the text of the resource, counting from top of document. Use exact short strings 10-20 characters of start and end of the paragraph in scope that must be part of the original text.\n"
+    "- **When to Use:**\n"
+    "   - For pointing to text parts.\n"
+    )
+
+doc_agent = Agent(
+    model=model,
+    deps_type=TextSlice,
+    output_type=AnalyseResult,
+    system_prompt="".join(doc_analyse_prompt),
     retries=3,
     model_settings=rag_model_settings,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
@@ -588,134 +646,145 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     return clean_response
 
 
-@agent.tool_plain
-@rag_agent.tool_plain
-def get_resource_file_contents(
+@agent.tool
+@rag_agent.tool
+@doc_agent.tool
+async def get_resource_file_contents(
+    ctx: RunContext[Deps],
     resource_id: str,
     resource_url: str,
-    max_token_length: int = 2000,
-    skip_tokens: int = 0,
+    offset: int,
+    max_length: int=0,
     ssl_verify=False,
 ) -> str:
-    """Retrieves the content of a resource stored in filetore, allows setting max token of output and skip tokens to extract a chunk
+    """Retrieves the content of a resource stored in filetore, allows setting max_length of output and offset to extract a slice of content
 
     Args:
         resource_id (str): The UUID of the CKAN resource
         resource_url (str): The download url of the CKAN resource
-        max_token_length (int): the maximum length of the string to return, default 2000
-        skip_tokens (int): ommits the token length given from start of the contents, to retrieve a chunk
+        max_length (int): the maximum length of the string to return, if zero, tries to fetch whole document
+        offset (int): ommits the content indexing from the start of the contents, to enable pagination
     Returns:
         str: the raw string content of the file retrieved
     Pagination Instructions:
-        - Use the `skip_tokens` parameter to skip a certain number of tokens (words) from the start of the document.
-        - If you want to retrieve specific chunks of the content, you can adjust the `max_token_length` accordingly.
-        - To paginate through the document, call this function multiple times with increasing values for `skip_tokens`.
+        - Use the `offset` parameter to skip a certain number of tokens (words) from the start of the document.
+        - If you want to retrieve specific chunks of the content, you can adjust the `max_length` accordingly.
+        - To paginate through the document, call this function multiple times with increasing values for `offset`.
         - When the end of the document is reached, the output will include "End of Document" to indicate that there are no more contents to retrieve.
     """
+
+    if ctx.deps.file:
+        log.debug(ctx.deps.file.url)
+        log.debug(resource_url)
+        if str(ctx.deps.file.url)==resource_url:
+            msg=f"ressource already loaded"
+            log.debug(msg)
+            return msg
     ckan_url = toolkit.config.get("ckan.site_url")
-    if ckan_url in resource_url:
-        storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
-        # Generate the folder structure based on the resource_id
-        first_level_folder = resource_id[:3]
-        second_level_folder = resource_id[3:6]
-        file_name = resource_id[6:]
+    try:
+        resource = TextResource(url=resource_url)
+        """Asynchronously download and store text from the URL."""
+        ckan_url = toolkit.config.get("ckan.site_url")
+        if ckan_url in resource_url:
+            storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
+            
+            # Generate folder structure based on resource_id
+            first_level_folder = resource_id[:3]
+            second_level_folder = resource_id[3:6]
+            file_name = resource_id[6:]
 
-        # Construct the full file path
-        file_path = os.path.join(
-            storage_path,
-            "resources",
-            first_level_folder,
-            second_level_folder,
-            file_name,
-        )
-        log.debug(file_path)
-        # Read and return the file contents
+            # Construct full file path
+            file_path = os.path.join(
+                storage_path,
+                "resources",
+                first_level_folder,
+                second_level_folder,
+                file_name,
+            )
+
+            log.debug(f"Loading CKAN resource file from: {file_path}")
+
+            try:
+                async with aiofiles.open(file_path, "r") as file:
+                    resource.text = await file.read()
+            except Exception as e:
+                raise RuntimeError(f"Failed to read CKAN resource file: {e}")
+        else:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(resource_url,verify_ssl=ssl_verify) as response:
+                        response.raise_for_status()
+                        resource.text = await response.text()
+            except Exception as e:
+                resource.text = ""
+                raise RuntimeError(f"Failed to download from {resource_url}: {e}")
+        
+        ctx.deps.file = resource
+        msg=f"TextResource downloaded form {resource_url}"
+    except Exception as e:
+        msg=f"Failed to download and add TextResource: {e}"
+    log.debug(msg)
+    return msg
+
+def fuzzy_search(pattern: str, text: str, threshold: float = 0.8) -> tuple[str, int, int]:
+    max_err = max(1, int((1 - threshold) * len(pattern)))
+
+    def try_match(pat: str):
+        fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
+        return regex.search(
+            fuzzy_pat,
+            text,
+            flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
+        ), fuzzy_pat
+
+    # First try: raw pattern
+    try:
+        match, fuzzy_pat = try_match(pattern)
+    except regex.error as e:
+        log.warning(f"Initial regex failed for pattern '{pattern}': {e}")
+        match = None
+
+    # Fallback: escaped pattern
+    if not match:
+        escaped = regex.escape(pattern)
         try:
-            with open(file_path, "r") as file:
-                contents = file.read()
-        except FileNotFoundError:
-            return "File not found."
-        except Exception as e:
-            return str(e)
-    else:
-        contents=download_file(resource_url, verify=ssl_verify)
-    if max_token_length:
-        return truncate_output_by_token(
-                    contents, token_limit=max_token_length, skip_tokens=skip_tokens
-                )
-    else:
-        return contents
+            match, fuzzy_pat = try_match(escaped)
+        except regex.error as e:
+            log.error(f"Escaped regex also failed for pattern '{escaped}': {e}")
+            return "", -1, -1
 
-@agent.tool_plain
-@rag_agent.tool_plain
-def find_text_slice_offsets(resource_id: str,
-                            resource_url: str,
+    log.debug(f"Tried to match: '{pattern}' with pattern: '{fuzzy_pat}' - found: {match}")
+    
+    if not match:
+        return "", -1, -1
+
+    return match.group(1), match.start(1), match.end(1)
+
+@agent.tool
+@rag_agent.tool
+@doc_agent.tool
+def find_text_slice_offsets(ctx: RunContext[TextSlice],
                             start_str: str,
                             end_str: str,
-                            ssl_verify=False,
-                            threshold: float = 0.8,
-                            ) -> tuple[int, int] | str:
-    """
-    Find the character offsets of a substring within a given text,
-    allowing for up to a certain % of insertions/deletions/substitutions.
-
-    Args:
-        resource_id (str): The UUID of the CKAN resource
-        resource_url (str): The download URL of the CKAN resource
-        start_str (str): Approximate start marker (10–20 chars)
-        end_str (str): Approximate end marker (10–20 chars)
-        ssl_verify (bool): Whether to verify SSL certificates
-        threshold (float): Similarity threshold (0–1)
-
-    Returns:
-        (start_offset, end_offset) on success, or an error message.
-    """
-    text = get_resource_file_contents(resource_id, resource_url, ssl_verify=ssl_verify)
-    log.debug(f"Loaded text of length {len(text)}")
-
-    # Work in lowercase for case‐insensitive matching
-    text_lower = text.lower()
-    start_pat = re.escape(start_str.lower())
-    end_pat   = re.escape(end_str.lower())
-
-    def fuzzy_search(pat: str, haystack: str) -> tuple[str, int]:
-        """
-        Use regex fuzzy matching: allow up to max_errors
-        """
-        # Compute max number of allowed errors
-        span=len(pat)*1.5
-        max_err = int((1 - threshold) * span)
-
-        # Escape the pattern and replace spaces with flexible space/punctuation
-        flexible_space = r'[\s\W]{1,5}'
-        escaped = re.escape(pat).replace(r'\ ', flexible_space)
-
-        # Build the fuzzy regex pattern using regex fuzzy syntax {e<=N}
-        fuzzy_pattern = f"({escaped})" + fr"{{e<={max_err}}}"
-         # Perform fuzzy search with BESTMATCH (returns closest match)
-        m = regex.search(fuzzy_pattern, haystack, flags=regex.BESTMATCH | regex.IGNORECASE)
-        #log.debug(m)
-        if not m:
-            return "", -1, -1
-        return m.group(1), m.start(1),m.end(1)
-
-    # 1) Find start marker
-    best_start, start_idx, start_idx_end = fuzzy_search(start_pat, text_lower)
+                            threshold: float = 0.8) -> tuple[int, int] | str:
+    text=ctx.deps.text
+    offset=ctx.deps.offset
+    slice_length=ctx.deps.length
+    start_match, start_idx, start_end_idx = fuzzy_search(start_str, text, threshold)
     if start_idx < 0:
-        return "Start string not found within the similarity threshold."
+        log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
+        return f"Start string not found: '{start_str}'"
 
-    # 2) Find end marker *after* the start match
-    suffix = text_lower[start_idx + len(best_start):]
-    best_end, rel_end_idx, rel_end_idx_end = fuzzy_search(end_pat, suffix)
+    # Search from the end of the start match
+    tail = text[start_end_idx:]
+    end_match, rel_end_idx, rel_end_idx_end = fuzzy_search(end_str, tail, threshold)
     if rel_end_idx < 0:
-        rel_end_idx=start_idx_end+1000
-        #return "End string not found within the similarity threshold."
+        log.debug(f"Tried to end pattern: '{end_str}' - returning default span")
+        return (offset+start_idx, offset+slice_length)
 
-    # Convert relative to absolute coordinates, and include the end marker
-    abs_end_idx = start_idx + len(best_start) + rel_end_idx + len(best_end)
-
-    log.debug(f"Matched '{best_start}' at {start_idx}, '{best_end}' at {abs_end_idx-len(best_end)}")
-    return (start_idx, abs_end_idx)
+    abs_end_idx = start_end_idx + rel_end_idx_end
+    log.debug(f"Matched '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
+    return (offset+start_idx, offset+abs_end_idx)
 
 class FuncSignature(BaseModel):
     doc: Any
@@ -875,7 +944,7 @@ async def rag_search(
                     hit = [RagHit(**item) for item in search_res[i]]
                     hits += hit
                     filter_ids+= list(set(hit.id for hit in hits))
-                    log.debug(hits)
+                    #log.debug(hits)
                 distinct_sources = list(set(hit.entity.source for hit in hits))
                 num_results=len(distinct_sources)
                 log.debug(f"Rag search for:{search_query} with limit: {limit} returned {num_results} results.")
@@ -886,8 +955,22 @@ async def rag_search(
 @agent.tool
 async def literature_search(ctx: RunContext[Deps], search_question: str, num_results: int=5) -> list[str]:
     r = await rag_agent.run(
-        f"Search for documents using thiss question:{search_question}. You must return {num_results} results",
+        f"Search for documents using this question:{search_question}. You must return {num_results} results",
         deps=ctx.deps, usage_limits=UsageLimits(request_limit=10),
+    )
+    log.debug(r.data)
+    return r.data.json()
+
+@agent.tool
+async def literature_analyse(ctx: RunContext[Deps], question: str, offset: int, max_length: int) -> list[str]:
+    doc=ctx.deps.file
+    if not doc:
+        return f"no document loaded"
+    text_part=doc.extract_substring(offset=offset,length=max_length)
+    log.debug(text_part)
+    r = await doc_agent.run(
+        f"Read trough: {text_part} and find if there is an answer to:{question}.",deps=text_part,
+        usage_limits=UsageLimits(request_limit=50),
     )
     log.debug(r.data)
     return r.data.json()
