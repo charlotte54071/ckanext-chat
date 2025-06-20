@@ -1,8 +1,22 @@
-import asyncio
+# Top of script (before any imports that configure logging)
 import multiprocessing as mp
-from logging.handlers import QueueListener
-import logging, os
+mp.set_start_method("spawn", force=True)
+import os, sys
+from loguru import logger
 from distutils.util import strtobool 
+logger.remove()
+if bool(strtobool(os.environ.get('DEBUG','false'))):
+    log_level="DEBUG"
+else:
+    log_level="ERROR"
+logger.add(
+    sys.stderr,
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | [{name}] {message}",
+    level=log_level,
+    enqueue=True
+)
+import asyncio
+
 from typing import Any
 
 import ckan.lib.base as base
@@ -21,30 +35,6 @@ from ckanext.chat.bot.agent import (exception_to_model_response,
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
-
-# configure logging for main thread nd workers
-log = __import__("logging").getLogger(__name__)
-
-# 1. Create a shared queue
-log_queue = mp.get_context("spawn").Queue(-1)
-
-# Main handler configuration (console or file)
-handler = logging.StreamHandler()
-if bool(strtobool(os.environ.get('DEBUG','false'))):
-    log.debug('enabling DEBUG Logging on ckanext.chat and its workers')
-    handler.setLevel(logging.DEBUG)
-handler.setFormatter(logging.Formatter(
-    "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    "%Y-%m-%d %H:%M:%S,%f"
-))
-
-# Listener applies the formatting
-queue_listener = QueueListener(
-    log_queue,
-    handler,
-    respect_handler_level=True
-)
-queue_listener.start()
 
 global_ckan_app = None
 
@@ -71,7 +61,7 @@ class ChatView(MethodView):
             # flask types do not mention that it's possible to return a response
             # from the `before_request` callback
             return core_helpers.redirect_to("user.login")
-        # log.debug(get_ckan_url_patterns())
+        # logger.debug(get_ckan_url_patterns())
         return base.render(
             "chat/chat_ui.html",
             extra_vars={
@@ -113,7 +103,7 @@ def ask():
         except Exception as e:
             user_promt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
-            log.error(error_response)
+            logger.error(error_response)
             return jsonify({"response": [user_promt, error_response]})
 
 
@@ -122,32 +112,24 @@ async def async_agent_response(prompt: str, history: str, user_id: str) -> Any:
 
 
 async def _agent_worker(prompt: str, history: str, user_id: str) -> Any:
-    from logging.handlers import QueueHandler
-    # Attach queue handler to your module's logger
-    mod_logger = logging.getLogger("ckanext.chat.bot.agent")
-    mod_logger.handlers.clear()
-    mod_logger.setLevel(logging.DEBUG)
-    mod_logger.propagate = False
-    mod_logger.addHandler(QueueHandler(log_queue))
-
-    # Silence other libraries
-    for noisy in ("httpcore", "asyncio", "urllib3"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
-
-    mod_logger.debug("Worker starting for user %s", user_id)
-
-    from ckanext.chat.bot.agent import agent, init_dynamic_models, convert_to_model_messages, Deps, dynamic_models_initialized
+    from loguru import logger
+    from ckanext.chat.bot.agent import Deps, agent, convert_to_model_messages, init_dynamic_models, dynamic_models_initialized
+    logger = logger.bind(process="worker", user_id=user_id)
+    logger.debug(f"Worker starting for {user_id}")
     if not dynamic_models_initialized:
         init_dynamic_models()
     deps = deps = Deps(user_id=user_id)
     msg_history = convert_to_model_messages(history)
     # Run the async agent
-    result = await agent.run(
-        user_prompt=prompt,
-        message_history=msg_history,
-        deps=deps,
+    r = await agent.run(
+            user_prompt=prompt,
+            message_history=msg_history,
+            deps=deps,
     )
-    return result
+    logger.debug(f"Worker done, result: {r}")
+    # Ensure all log messages are sent before process exits
+    await logger.complete()
+    return r
     
 
 blueprint.add_url_rule(

@@ -1,4 +1,4 @@
-pydantic-ai-slim[openai,logfire]==0.2.15
+pydantic-ai-slim[openai,logfire]>=0.3.1
 openai
 logfire[httpx]
 nest_asyncio
@@ -7,3 +7,4 @@ tiktoken
 regex
 aiofiles
 aiohttp[speedups]
+loguru
