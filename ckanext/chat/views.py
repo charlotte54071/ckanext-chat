@@ -1,4 +1,9 @@
 import asyncio
+import multiprocessing as mp
+from logging.handlers import QueueListener
+import logging, os
+from distutils.util import strtobool 
+from typing import Any
 
 import ckan.lib.base as base
 import ckan.lib.helpers as core_helpers
@@ -7,14 +12,40 @@ from ckan.common import _, current_user
 from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
 
-from ckanext.chat.bot.agent import (Deps, async_agent_response,
-                                    exception_to_model_response,
+# from ckanext.chat.bot.agent import (Deps, async_agent_response,
+#                                     exception_to_model_response,
+#                                     user_input_to_model_request)
+from ckanext.chat.bot.agent import (exception_to_model_response,
                                     user_input_to_model_request)
+
 from ckanext.chat.helpers import service_available
 
 blueprint = Blueprint("chat", __name__)
 
+# configure logging for main thread nd workers
 log = __import__("logging").getLogger(__name__)
+
+# 1. Create a shared queue
+log_queue = mp.get_context("spawn").Queue(-1)
+
+# Main handler configuration (console or file)
+handler = logging.StreamHandler()
+if bool(strtobool(os.environ.get('DEBUG','false'))):
+    log.debug('enabling DEBUG Logging on ckanext.chat and its workers')
+    handler.setLevel(logging.DEBUG)
+handler.setFormatter(logging.Formatter(
+    "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    "%Y-%m-%d %H:%M:%S,%f"
+))
+
+# Listener applies the formatting
+queue_listener = QueueListener(
+    log_queue,
+    handler,
+    respect_handler_level=True
+)
+queue_listener.start()
+
 global_ckan_app = None
 
 
@@ -51,12 +82,7 @@ class ChatView(MethodView):
         )
 
 
-from pydantic_ai.messages import ModelMessage, TextPart
-
-# Assuming 'response' is an instance of ModelResponse
-
-# Proceed with processing 'filtered_parts'
-
+from pydantic_ai.messages import TextPart
 
 def ask():
     user_input = request.form.get("text")
@@ -67,11 +93,9 @@ def ask():
     # If they're not a logged in user, don't allow them to see content
     if tkuser.name is None:
         return {"success": False, "msg": "Must be logged in to view site"}
-    deps = Deps(user_id=tkuser.id)
-    # log.debug(user)
     while attempt < max_retries:
         try:
-            response = asyncio.run(async_agent_response(user_input, history, deps=deps))
+            response = asyncio.run(async_agent_response(user_input, history, user_id=tkuser.id), debug=True)
             # Now response is guaranteed to have new_messages() if no exception occurred.
             # Ensure new_messages() is awaited in the sync wrapper if it's async
             messages = response.new_messages()
@@ -92,6 +116,39 @@ def ask():
             log.error(error_response)
             return jsonify({"response": [user_promt, error_response]})
 
+
+async def async_agent_response(prompt: str, history: str, user_id: str) -> Any:
+    return await _agent_worker(prompt, history, user_id)
+
+
+async def _agent_worker(prompt: str, history: str, user_id: str) -> Any:
+    from logging.handlers import QueueHandler
+    # Attach queue handler to your module's logger
+    mod_logger = logging.getLogger("ckanext.chat.bot.agent")
+    mod_logger.handlers.clear()
+    mod_logger.setLevel(logging.DEBUG)
+    mod_logger.propagate = False
+    mod_logger.addHandler(QueueHandler(log_queue))
+
+    # Silence other libraries
+    for noisy in ("httpcore", "asyncio", "urllib3"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    mod_logger.debug("Worker starting for user %s", user_id)
+
+    from ckanext.chat.bot.agent import agent, init_dynamic_models, convert_to_model_messages, Deps, dynamic_models_initialized
+    if not dynamic_models_initialized:
+        init_dynamic_models()
+    deps = deps = Deps(user_id=user_id)
+    msg_history = convert_to_model_messages(history)
+    # Run the async agent
+    result = await agent.run(
+        user_prompt=prompt,
+        message_history=msg_history,
+        deps=deps,
+    )
+    return result
+    
 
 blueprint.add_url_rule(
     "/chat",

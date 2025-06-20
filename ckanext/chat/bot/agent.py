@@ -48,7 +48,7 @@ os.environ['OTEL_EXPORTER_OTLP_ENDPOINT'] = 'http://docker-dev.iwm.fraunhofer.de
 
 import asyncio
 import os
-from flask import Flask, request, jsonify
+from flask import Flask
 from pydantic_ai import Agent, RunContext
 import aiofiles
 
@@ -188,6 +188,7 @@ azure_client = AsyncAzureOpenAI(
     # api_version="2024-02-15-preview",
     api_version="2024-06-01",
     api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
+    
 )
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o-mini")
 rag_model_settings = OpenAIModelSettings(
@@ -340,6 +341,7 @@ system_prompt = (
     "- If you output links, ensure you use CKAN URL patterns and highlight formatting where necessary.\n"
     "- If you need to look up literature, try the `literature_search`. Only use it if no resource is mentioned.\n"
     "- If you need to find relevant parts in documents run get_resource_file_contents with a download url once, the resource will be available as long as you dont use get_resource_file_contents again. Then run 'literature_analyse'. Use 'offset' and 'max_length' parameter to analyze substrings of the document[offset:max_length]. If you ommit max_length the whole text will be loaded at once.\n"
+    "- Iter through whole document to find answers for the user question. 'literature_analyse'. Use 'offset' and 'max_length' parameter to analyze substrings of the document[offset:max_length].\n"
     "- Ensure you select the appropriate tool based on the user's request and available capabilities.\n"
     "\n"
     "Your Toolset:\n\n"
@@ -464,21 +466,6 @@ def convert_to_model_messages(history: str) -> List:
         history_list = json.loads(history)
         return ModelMessagesTypeAdapter.validate_python(history_list)
     return None
-
-
-async def async_agent_response(prompt: str, history: str, deps: Deps) -> Any:
-    if not dynamic_models_initialized:
-        init_dynamic_models()
-    msg_history = convert_to_model_messages(history)
-    # Wrap the synchronous run call into a thread so that it can be awaited
-    response = await asyncio.to_thread(
-        agent.run_sync,
-        user_prompt=prompt,
-        message_history=msg_history,
-        deps=deps,
-        usage_limits=UsageLimits(total_tokens_limit=None, response_tokens_limit=None),
-    )
-    return response
 
 
 # --------------------- CKAN Routing and URL Helpers ---------------------
@@ -648,7 +635,6 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
 
 @agent.tool
 @rag_agent.tool
-@doc_agent.tool
 async def get_resource_file_contents(
     ctx: RunContext[Deps],
     resource_id: str,
