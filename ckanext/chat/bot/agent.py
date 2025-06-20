@@ -1,3 +1,6 @@
+from loguru import logger
+log = logger.bind(module=__name__)
+
 import asyncio
 import aiofiles
 import aiohttp
@@ -6,11 +9,11 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
-import nest_asyncio
+#import nest_asyncio
 import requests
 import tiktoken
 import regex
@@ -30,12 +33,13 @@ from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
 from pydantic_ai.messages import (ModelMessagesTypeAdapter, ModelRequest,
                                   ModelResponse, TextPart, UserPromptPart)
 from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
-from pydantic_ai.providers.openai import OpenAIProvider
+#from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 
-# Allow nested event loops.
-nest_asyncio.apply()
+# # Allow nested event loops.
+# nest_asyncio.apply()
 
 import logfire
 
@@ -48,7 +52,7 @@ os.environ['OTEL_EXPORTER_OTLP_ENDPOINT'] = 'http://docker-dev.iwm.fraunhofer.de
 
 import asyncio
 import os
-from flask import Flask, request, jsonify
+from flask import Flask
 from pydantic_ai import Agent, RunContext
 import aiofiles
 
@@ -175,27 +179,26 @@ def download_file(url: str, headers: dict = None, verify: bool = True):
         return str(e)
 
 
-# --------------------- Logging Setup ---------------------
-log = __import__("logging").getLogger(__name__)
-
 # --------------------- Model & Agent Setup ---------------------
 
 # Azure Setup
-azure_client = AsyncAzureOpenAI(
-    azure_endpoint=toolkit.config.get(
-        "ckanext.chat.completion_url", "https://your.chat.api"
-    ),
-    # api_version="2024-02-15-preview",
-    api_version="2024-06-01",
-    api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
-)
 deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o-mini")
 rag_model_settings = OpenAIModelSettings(
     model_name=deployment,
     max_tokens=16384,
     #openai_reasoning_effort= "low"
 )
-model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
+model = OpenAIModel(
+    "gpt-4o",
+    provider=AzureProvider(
+        azure_endpoint=toolkit.config.get(
+        "ckanext.chat.completion_url", "https://your.chat.api"
+    ),
+        api_version="2024-06-01",
+        api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
+    ),
+)
+#model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
 # #Ollama setup
 # model = OpenAIModel(
@@ -209,7 +212,7 @@ model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_clie
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
 embedding_model = toolkit.config.get("ckanext.chat.embedding_model", 'text-embedding-3-small')
-embedding_api = toolkit.config.get("ckanext.chat.embedding_api", azure_client.embeddings)
+embedding_api = toolkit.config.get("ckanext.chat.embedding_api", "")
 
 vector_dim = None
 if milvus_url:
@@ -242,19 +245,35 @@ class TextSlice:
     text: str
     offset: int
     length: int
-
+    
 @dataclass
 class TextResource:
-    url: HttpUrl=None
-    text: Optional[str] = field(init=False, default=None)
+    url: HttpUrl = None
+    _text: Optional[str] = field(init=False, default=None)
     
-    def extract_substring(self, offset: int, length: int) -> str:
+    @property
+    def text(self) -> Optional[str]:
+        return self._text
+    
+    @text.setter
+    def text(self, value: Optional[str]):
+        self._text = value
+        self.length = len(value) if value is not None else 0
+
+    length: int = field(init=False, default=0)
+    
+    def extract_substring(self, offset: int, length: int) -> TextSlice:
         if self.text is None:
             raise ValueError("Text not loaded")
-        text_slice=self.text[offset:offset + length]
-        return TextSlice(text=text_slice,offset=offset,length=len(text_slice))
-
+        text_slice = self.text[offset:offset + length]
+        return TextSlice(text=text_slice, offset=offset, length=len(text_slice))
     
+    def __getstate__(self):
+        # Exclude _text from serialization
+        state = self.__dict__.copy()
+        state['_text'] = None  # Don't serialize large text
+        return state
+
 @dataclass
 class Deps:
     user_id: str
@@ -265,7 +284,7 @@ class Deps:
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
-    file: TextResource = None
+    file: Optional[TextResource] = None
 
 # --------------------- Dynamic Models Initialization ---------------------
 
@@ -327,51 +346,63 @@ class LitSearchResult(BaseModel):
 
 system_prompt = (
     "Role:\n\n"
-    "You are an assistant to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of thought right away. Reduce Thinking output to a minimum.\n"
-    "Key Guidelines:\n\n"
-    "- Always present view URLs for resources you present. Utilize the `get_ckan_url_patterns` tool to obtain the URL patterns for constructing these links.\n"
-    "- For highlighting text in documents, use the specific `markdown_view.highlight` URL pattern. The pattern is `/dataset/<pkg_id>/resource/<id>/highlight/<int:start>/<int:end>`.\n"
-    "- Prefer view URLs for CKAN resources over download URLs, find them by action 'resource_view_list'.\n"
-    "- Ensure that you present these URLs in a clear and organized manner, directly linking to the relevant sections of the documents.\n"
+    "You are an assistant to a CKAN software instance that executes tool commands and assesses their success or failure. For other task your handing over tasks to the other agents like 'literature_search' or 'literature_analysis', you will have to think about how to facilitate them to use ur goals and instruct them with the correct questions.\n"
+    "Dont output your thinking output, focus on presenting results!\n"
     "\n"
-    "- For update or patch actions, always present the proposed changes to the user and ask for explicit confirmation before proceeding.\n"
-    "- When turning off SSL verification in resource downloads (by setting `ssl_verify=False`), notify the user and request confirmation before proceeding.\n"
-    "- For general dataset searches and overviews, prioritize using the `package_search` action with parameter q= to fetch all datasets add parameter include_private=true to also list private datasets.\n"
-    "- If you output links, ensure you use CKAN URL patterns and highlight formatting where necessary.\n"
-    "- If you need to look up literature, try the `literature_search`. Only use it if no resource is mentioned.\n"
-    "- If you need to find relevant parts in documents run get_resource_file_contents with a download url once, the resource will be available as long as you dont use get_resource_file_contents again. Then run 'literature_analyse'. Use 'offset' and 'max_length' parameter to analyze substrings of the document[offset:max_length]. If you ommit max_length the whole text will be loaded at once.\n"
-    "- Ensure you select the appropriate tool based on the user's request and available capabilities.\n"
+    "Key Guidelines:\n\n"
+    "- Resource Access and Navigation:\n"
+    "  - Provide access to resource view URLs using `get_ckan_url_patterns`.\n"
+    "  - Utilize `markdown_view.highlight` for key text sections when constructing reports: `/dataset/<pkg_id>/resource/<id>/highlight/<int:start>/<int:end>`.\n"
+    "\n"
+    "- Action Prioritization:\n"
+    "  - Favor view URLs over download URLs utilizing the `resource_view_list`.\n"
+    "  - Link URLs directly to relevant document sections clearly.\n"
+    "\n"
+    "- Execution and Verification:\n"
+    "  - Present updates and changes, requesting user confirmation before proceeding.\n"
+    "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
+    "\n"
+    "- Data Search and Retrieval:\n"
+    "  - Use `package_search` with `include_private=true` for comprehensive dataset searches.\n"
+    "  - If no specific resource is indicated, initiate `literature_search`.\n"
+    "\n"
+    "- Document Analysis:\n"
+    "  - For answering document-related inquiries, utilize `literature_analyse` to analyze the entire document comprehensively.\n"
+    "  - Begin with an offset of 0 and a suitable max_length (e.g., a fixed number of characters or tokens appropriate for processing).\n"
+    "  - Call `literature_analyse` with the current offset and max_length, capturing the analysis results for that chunk.\n"
+    "  - After each call, check the returned `doc_position` (a value indicating the portion of the document analyzed, where 1.0 represents the end).\n"
+    "  - If `doc_position` < 1.0, increase the offset by max_length and repeat the analysis on the next chunk.\n"
+    "  - Continue this process until `doc_position` >= 1.0, ensuring the full document is covered.\n"
+    "  - Compile the findings from all chunks systematically to formulate a complete answer, addressing both vague queries (e.g., presence and location of topics) and detailed queries requiring full context.\n"
     "\n"
     "Your Toolset:\n\n"
     "1. **List CKAN Actions:**\n"
     "   - **Function:** `get_ckan_actions() -> List[str]`\n"
-    "   - **Purpose:** Retrieves a complete list of available CKAN actions by name.\n"
+    "   - Retrieve available CKAN action names.\n"
     "\n"
     "2. **Get Function Information:**\n"
     "   - **Function:** `get_action_info(action_key: str) -> dict`\n"
-    "   - **Purpose:** Provides detailed information for a specified CKAN action.\n"
+    "   - Access detailed information on specified CKAN actions.\n"
     "\n"
-    "3. **Execute CKAN Action:**\n"
+    "3. **Execute CKAN Actions:**\n"
     "   - **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "   - **Purpose:** Executes a specified CKAN action with provided parameters.\n"
+    "   - Execute CKAN actions with specified parameters.\n"
     "\n"
-    "4. **Retrieve CKAN URL Patterns:**\n"
+    "4. **URL Patterns Retrieval:**\n"
     "   - **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
-    "   - **Purpose:** Fetches all URL patterns in CKAN.\n"
+    "   - Fetch URL patterns in CKAN.\n"
     "\n"
     "5. **Download Resource Contents:**\n"
     "   - **Function:** `get_resource_file_contents`\n"
-    "   - **Purpose:** Retrieves file content from CKAN or external sources and makes it permanent availbale to tools, as long as not run again.\n"
-    "   - **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
+    "   - Retrieve file content, needs to be run again every time new user input is presented, notify if SSL verification is disabled.\n"
     "\n"
-    "6. **Retrieve Documents:**\n"
+    "6. **Document Searches:**\n"
     "   - **Function:** `literature_search(search_question: str, num_results: int=5) -> list[str]`\n"
-    "   - **Purpose:** Performs a literature search.\n"
+    "   - Conduct literature searches.\n"
     "\n"
-    "7. **Analyse Document:**\n"
-    "   - **Function:** `literature_analyse(question: str, offset: int, max_length: int) -> list[str]`\n"
-    "   - **Pagination:** To iterate through content you must increase the offset parameter by the amount of max_length of the previous call.\n"
-    "   - **Purpose:** Reads a document part already loaded and analyzes it concerning the question asked.\n"
+    "7. **Comprehensive Document Analysis:**\n"
+    "   - **Function:** `literature_analyse`\n"
+    "   - Engage document analysis in one full, logical flow to address the inquiry, ensuring coherence and completeness.\n"
 )
 
 agent = Agent(
@@ -430,6 +461,7 @@ class SliceModel(BaseModel):
 
 class AnalyseResult(BaseModel):
     answer: str = ""
+    doc_position: float
     text_slices: Optional[list[SliceModel]] = None
     error: Optional[List[str]] = None
 
@@ -438,7 +470,8 @@ doc_analyse_prompt = (
     "You are an assistant analysing scientific documents by the question you were ask.\n"
     "Key Guidelines:\n\n"
     "- Find the charcter indexes of start and end of the passage by using 'find_text_slice_offsets'. You have to use very close matching sub strings o the document text or it will fail.\n\n"
-    "- You must add all relevant passages to the list of 'text_slices' add 'offset' to the tuple returned by 'find_text_slice_offsets' the get the absolute index.\n\n"
+    "- You must add all relevant passages to the list of 'text_slices' use 'find_text_slice_offsets' the get the absolute index values.\n\n"
+    "- If the text analysed is not reaching the end of the document. You must ask for additiona text input in your answer!\n"
     "- Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
     "Your Toolset:\n\n"
     "1. **Index of Text Parts:**\n"
@@ -450,35 +483,18 @@ doc_analyse_prompt = (
 
 doc_agent = Agent(
     model=model,
-    deps_type=TextSlice,
+    deps_type=Deps,  # Changed from TextSlice to Deps
     output_type=AnalyseResult,
     system_prompt="".join(doc_analyse_prompt),
     retries=3,
     model_settings=rag_model_settings,
-    # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
-
 
 def convert_to_model_messages(history: str) -> List:
     if history:
         history_list = json.loads(history)
         return ModelMessagesTypeAdapter.validate_python(history_list)
     return None
-
-
-async def async_agent_response(prompt: str, history: str, deps: Deps) -> Any:
-    if not dynamic_models_initialized:
-        init_dynamic_models()
-    msg_history = convert_to_model_messages(history)
-    # Wrap the synchronous run call into a thread so that it can be awaited
-    response = await asyncio.to_thread(
-        agent.run_sync,
-        user_prompt=prompt,
-        message_history=msg_history,
-        deps=deps,
-        usage_limits=UsageLimits(total_tokens_limit=None, response_tokens_limit=None),
-    )
-    return response
 
 
 # --------------------- CKAN Routing and URL Helpers ---------------------
@@ -648,13 +664,10 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
 
 @agent.tool
 @rag_agent.tool
-@doc_agent.tool
 async def get_resource_file_contents(
     ctx: RunContext[Deps],
     resource_id: str,
     resource_url: str,
-    offset: int,
-    max_length: int=0,
     ssl_verify=True,
 ) -> str:
     """Retrieves the content of a resource stored in filetore, allows setting max_length of output and offset to extract a slice of content
@@ -662,20 +675,13 @@ async def get_resource_file_contents(
     Args:
         resource_id (str): The UUID of the CKAN resource
         resource_url (str): The download url of the CKAN resource
-        max_length (int): the maximum length of the string to return, if zero, tries to fetch whole document
-        offset (int): ommits the content indexing from the start of the contents, to enable pagination
     Returns:
         str: the raw string content of the file retrieved
-    Pagination Instructions:
-        - Use the `offset` parameter to skip a certain number of tokens (words) from the start of the document.
-        - If you want to retrieve specific chunks of the content, you can adjust the `max_length` accordingly.
-        - To paginate through the document, call this function multiple times with increasing values for `offset`.
-        - When the end of the document is reached, the output will include "End of Document" to indicate that there are no more contents to retrieve.
     """
 
     if ctx.deps.file:
-        log.debug(ctx.deps.file.url)
-        log.debug(resource_url)
+        #log.debug(ctx.deps.file.url)
+        #log.debug(resource_url)
         if str(ctx.deps.file.url)==resource_url:
             msg=f"ressource already loaded"
             log.debug(msg)
@@ -720,15 +726,15 @@ async def get_resource_file_contents(
                 raise RuntimeError(f"Failed to download from {resource_url}: {e}")
         
         ctx.deps.file = resource
-        msg=f"TextResource downloaded form {resource_url}"
+        msg=f"TextResource downloaded form {resource_url} with length: {resource.length}"
     except Exception as e:
         msg=f"Failed to download and add TextResource: {e}"
     log.debug(msg)
     return msg
 
-def fuzzy_search(pattern: str, text: str, threshold: float = 0.8) -> tuple[str, int, int]:
+def _fuzzy_search_sync(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
     max_err = max(1, int((1 - threshold) * len(pattern)))
-
+    
     def try_match(pat: str):
         fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
         return regex.search(
@@ -736,54 +742,138 @@ def fuzzy_search(pattern: str, text: str, threshold: float = 0.8) -> tuple[str, 
             text,
             flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
         ), fuzzy_pat
-
-    # First try: raw pattern
+    
     try:
         match, fuzzy_pat = try_match(pattern)
     except regex.error as e:
-        log.warning(f"Initial regex failed for pattern '{pattern}': {e}")
+        print(f"Initial regex failed for pattern '{pattern}': {e}")
         match = None
-
-    # Fallback: escaped pattern
+    
     if not match:
         escaped = regex.escape(pattern)
         try:
             match, fuzzy_pat = try_match(escaped)
         except regex.error as e:
-            log.error(f"Escaped regex also failed for pattern '{escaped}': {e}")
+            print(f"Escaped regex also failed for pattern '{escaped}': {e}")
             return "", -1, -1
-
-    log.debug(f"Tried to match: '{pattern}' with pattern: '{fuzzy_pat}' - found: {match}")
     
     if not match:
         return "", -1, -1
-
+    
     return match.group(1), match.start(1), match.end(1)
 
+def split_text_into_chunks(text, chunk_size, overlap):
+    step = chunk_size - overlap
+    chunks = []
+    for i in range(0, len(text), step):
+        chunk = text[i:i + chunk_size]
+        if len(chunk) > 0:
+            chunks.append((chunk, i))
+    return chunks
+
+import time
+async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
+    start_time = time.perf_counter()
+    chunk_size = 10000
+    overlap = 1000
+    
+    if len(text) <= chunk_size:
+        result = _fuzzy_search_sync(pattern, text, threshold)
+        duration = time.perf_counter() - start_time
+        print(f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds")
+        return result
+    
+    step = chunk_size - overlap
+    tasks = []
+    chunks = []
+    
+    for i in range(0, len(text), step):
+        chunk = text[i:i + chunk_size]
+        if chunk:
+            chunks.append((chunk, i))
+            task = asyncio.create_task(asyncio.to_thread(_fuzzy_search_sync, pattern, chunk, threshold))
+            tasks.append(task)
+    
+    for coro in asyncio.as_completed(tasks):
+        try:
+            match, start, end = await coro
+            if start >= 0:
+                chunk_idx = tasks.index(coro._coro)  # Find index of completed task
+                abs_start = chunks[chunk_idx][1] + start
+                abs_end = chunks[chunk_idx][1] + end
+                duration = time.perf_counter() - start_time
+                log.debug(f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds")
+                # Cancel all other tasks
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                return match, abs_start, abs_end
+        except asyncio.CancelledError:
+            pass
+    
+    duration = time.perf_counter() - start_time
+    log.debug(f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds")
+    return "", -1, -1
+
 @doc_agent.tool
-def find_text_slice_offsets(ctx: RunContext[TextSlice],
-                            start_str: str,
-                            end_str: str,
-                            threshold: float = 0.8) -> tuple[int, int] | str:
-    log.debug(ctx)
-    text=ctx.deps.text
-    offset=ctx.deps.offset
-    slice_length=ctx.deps.length
-    start_match, start_idx, start_end_idx = fuzzy_search(start_str, text, threshold)
+async def find_text_slice_offsets(
+    ctx: RunContext[Deps],
+    start_str: str,
+    end_str: str,
+    threshold: float = 0.9
+) -> Union[Tuple[int, int], str]:
+    """
+    Finds the start and end offsets of a text slice based on fuzzy matching of start and end strings.
+
+    Args:
+        ctx (RunContext[Deps]): The context containing the dependencies.
+        start_str (str): The starting string to search for.
+        end_str (str): The ending string to search for.
+        threshold (float): The threshold for fuzzy matching (default is 0.9).
+
+    Returns:
+        Union[Tuple[int, int], str]: A tuple containing:
+            - The start and end offsets if both strings are found.
+            - An error message if the start string is not found.
+    """
+    if not ctx.deps.file or not ctx.deps.file.text:
+        log.debug("No file loaded in Deps")
+        return "No file loaded in Deps"
+
+    text = ctx.deps.file.text
+    offset = 0  # TextResource doesn't have an offset; use 0
+    slice_length = ctx.deps.file.length
+    
+    # Try exact match first
+    lower_text = text.lower()
+    lower_start_str = start_str.lower()
+    start_idx = lower_text.find(lower_start_str)
+    if start_idx != -1:
+        start_end_idx = start_idx + len(start_str)
+        tail = text[start_end_idx:]
+        lower_tail = tail.lower()
+        lower_end_str = end_str.lower()
+        rel_end_idx = lower_tail.find(lower_end_str)
+        if rel_end_idx != -1:
+            abs_end_idx = start_end_idx + rel_end_idx + len(end_str)
+            log.debug(f"Exact match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
+            return (offset + start_idx, offset + abs_end_idx)
+    
+    # Fall back to fuzzy search
+    start_match, start_idx, start_end_idx = await fuzzy_search_early_cancel(start_str, text, threshold)
     if start_idx < 0:
         log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
         return f"Start string not found: '{start_str}'"
 
-    # Search from the end of the start match
     tail = text[start_end_idx:]
-    end_match, rel_end_idx, rel_end_idx_end = fuzzy_search(end_str, tail, threshold)
+    end_match, rel_end_idx, rel_end_idx_end = await fuzzy_search_early_cancel(end_str, tail, threshold)
     if rel_end_idx < 0:
         log.debug(f"Tried to end pattern: '{end_str}' - returning default span")
-        return (offset+start_idx, offset+slice_length)
+        return (offset + start_idx, offset + slice_length)
 
     abs_end_idx = start_end_idx + rel_end_idx_end
-    log.debug(f"Matched '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
-    return (offset+start_idx, offset+abs_end_idx)
+    log.debug(f"Fuzzy match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
+    return (offset + start_idx, offset + abs_end_idx)
 
 class FuncSignature(BaseModel):
     doc: Any
@@ -953,27 +1043,50 @@ async def rag_search(
 
 @agent.tool
 async def literature_search(ctx: RunContext[Deps], search_question: str, num_results: int=5) -> list[str]:
-    r = await rag_agent.run(
-        f"Search for documents using this question:{search_question}. You must return {num_results} results",
-        deps=ctx.deps, usage_limits=UsageLimits(request_limit=10),
-    )
-    log.debug(r.data)
+    for attempt in range(3):
+        try:
+            r = await asyncio.wait_for(
+                rag_agent.run(
+                    f"Search for documents using this question:{search_question}. You must return {num_results} results",
+                    deps=ctx.deps, usage_limits=UsageLimits(request_limit=10),
+                ),
+                timeout=20
+                )
+            break
+        except (asyncio.TimeoutError) as e:
+                logger.warning("Timeout on attempt %d, retrying...", attempt + 1)
+        except Exception as e:
+            logger.error("Unexpected error on attempt %d: %s", attempt + 1, str(e))
+    else:
+        raise RuntimeError("All Azure retries timed out")
+    #log.debug(r.data)
     return r.data.json()
 
 @agent.tool
-async def literature_analyse(ctx: RunContext[Deps], question: str, offset: int, max_length: int) -> list[str]:
-    doc=ctx.deps.file
+async def literature_analyse(ctx: RunContext[Deps], question: str, offset: int, max_length: int=4000) -> list[str]:
+    doc = ctx.deps.file
     if not doc:
         return f"no document loaded"
-    text_part=doc.extract_substring(offset=offset,length=max_length)
-    log.debug(text_part)
-    r = await doc_agent.run(
-        f"Read trough: {text_part} and find if there is an answer to:{question}.",deps=text_part,
-        usage_limits=UsageLimits(request_limit=50),
-    )
-    log.debug(r.data)
+    text_part = doc.extract_substring(offset=offset, length=max_length)
+    doc_position = float(offset + text_part.length) / ctx.deps.file.length
+    for attempt in range(3):
+        try:
+            r = await asyncio.wait_for(
+                doc_agent.run(
+                    f"Read through: {text_part.text} and find if there is an answer to: {question}. The text part ends at {doc_position} of the whole document.",
+                    deps=ctx.deps,  # Pass Deps instead of text_part
+                    usage_limits=UsageLimits(request_limit=50),
+                ),
+                timeout=20
+            )
+            break
+        except asyncio.TimeoutError:
+            logger.warning("Timeout on attempt %d, retrying...", attempt + 1)
+        except Exception as e:
+            logger.error("Unexpected error on attempt %d: %s", attempt + 1, str(e))
+    else:
+        raise RuntimeError("All Azure retries timed out")
     return r.data.json()
-
 
 def get_user_token(user_id: str) -> Optional[str]:
     user = CKANmodel.User.get(user_reference=user_id)
