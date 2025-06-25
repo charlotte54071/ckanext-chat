@@ -1,10 +1,7 @@
 ckan.module("chat-module", function ($, _) {
   "use strict";
   _ = _ || window._; // use underscore if available
-  var toolGroups = {};
-  var nonToolParts = [];
   var timeline = [];
-
 
   // Private helper: Render Markdown and sanitize output
   function renderMarkdown(content) {
@@ -57,7 +54,35 @@ ckan.module("chat-module", function ($, _) {
     }
     return cleanHtml;
   }
+  function copyToClipboard(text, button) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function () {
+        button.html('<i class="fas fa-check"></i>');
+        setTimeout(function () {
+          button.html('<i class="fas fa-copy"></i>');
+        }, 2000);
+      }).catch(function (err) {
+        console.error("Failed to copy: ", err);
+      });
+    } else {
+      // Fallback for unsupported browsers
+      var $tempInput = $('<textarea>');
+      $('body').append($tempInput);
+      $tempInput.val(text).select();
 
+      try {
+        document.execCommand('copy');
+        button.html('<i class="fas fa-check"></i>');
+        setTimeout(function () {
+          button.html('<i class="fas fa-copy"></i>');
+        }, 2000);
+      } catch (err) {
+        console.error("Failed to copy using fallback method: ", err);
+      }
+
+      $tempInput.remove();
+    }
+  }
   // Private helper: Convert timestamp strings to ISO format recursively
   function convertTimestampsToISO(data) {
     if (Array.isArray(data)) {
@@ -115,6 +140,53 @@ ckan.module("chat-module", function ($, _) {
       $("#chatList").on("click", "li", function () {
         var index = $(this).index();
         self.loadChat(index);
+      });
+    },
+    addCopyButtonsToBotAnswers: function () {
+      var self = this; // Store the context
+
+      this.el.find(".bot-answer").each(function () {
+          var botAnswer = $(this);
+          
+          // Check if a copy button already exists
+          if (botAnswer.find(".copy-button").length > 0) return;
+
+          // Create the copy button
+          var copyButton = $('<button class="copy-button"><i class="fas fa-copy"></i></button>');
+          
+          // Event handler for the copy button
+          copyButton.on("click", () => {
+              // Extract the text from the .text class within the bot-answer
+              var textToCopy = botAnswer.find('.text').text().trim(); 
+              
+              copyToClipboard(textToCopy, copyButton); // Call the function directly
+          });
+
+          // Position the copy button
+          botAnswer.css("position", "relative");
+          copyButton.css({ position: "absolute", top: "5px", right: "5px" });
+          botAnswer.append(copyButton);
+      });
+    },
+
+    addCopyButtonsToCodeBlocks: function () {
+      var self = this; // Store the context
+      this.el.find("pre code").each(function () {
+          var codeBlock = $(this);
+          if (codeBlock.parent().find(".copy-button").length > 0) return;
+
+          var copyButton = $('<button class="copy-button"><i class="fas fa-copy"></i></button>');
+          
+          copyButton.on("click", () => {
+              // Copy the text from the code block
+              var textToCopy = codeBlock.text().trim();
+              copyToClipboard(textToCopy, copyButton); // Call the function directly
+          });
+
+          var preElement = codeBlock.parent();
+          preElement.css("position", "relative");
+          copyButton.css({ position: "absolute", top: "5px", right: "5px" });
+          preElement.append(copyButton);
       });
     },
 
@@ -179,6 +251,9 @@ ckan.module("chat-module", function ($, _) {
         chat.messages.forEach(function (msg) {
           self.appendMessage(msg);
         });
+        console.log(timeline);
+        self.addCopyButtonsToBotAnswers();
+        self.addCopyButtonsToCodeBlocks();
         this.currentChatLabel = chat.title;
       }
     },
@@ -206,7 +281,7 @@ ckan.module("chat-module", function ($, _) {
       
       function createMessageHtml(userMsg, markdown, id) {
         return $(`
-            <div id="${id}" class="message ${userMsg ? "user-message" : "bot-message"}">
+            <div id="${id}" class="message ${userMsg ? "user-message" : "bot-message bot-answer"}">
               <span class="col-2 chatavatar"><i class="fas fa-${userMsg ? "user" : "robot"}"></i></span>
               <div class="col-auto text">
                 ${renderMarkdown(markdown)}
@@ -214,15 +289,15 @@ ckan.module("chat-module", function ($, _) {
             </div>
         `);
       };
-      function createToolHtml(markdown, id, tool_name, timestamp, succeeded = true) {
+      function createToolHtml(markdown, id, tool_id, tool_name, timestamp, succeeded = true) {
         const statusClass = succeeded ? "border-success" : "border-danger";
         return $(`
-          <div class="message bot-message">
+          <div id="${id}" class="message bot-message">
             <span class="col-2 chatavatar"><i class="fas fa-robot"></i></span>
             <div class="col-auto card text ${statusClass}" style="cursor:pointer;">
               <div class="card-body p-0">
                 <h5 class="card-title">Tool Call: ${tool_name} ${timestamp}</h5>
-                <div class="collapse mt-2" id="${id}">
+                <div class="collapse mt-2" id="${tool_id}">
                   <div class="card card-body">
                     ${renderMarkdown(markdown)}
                   </div>
@@ -254,18 +329,35 @@ ckan.module("chat-module", function ($, _) {
           return String(content);
         }
       }
+      function combineParts(parts) {
+        return parts.map(part => {
+            // Extrahiere die relevanten Eigenschaften
+            const { content, args } = part;
+    
+            // Erstelle eine Markdown-Darstellung
+            let markdown = '';
+    
+            if (content) {
+                markdown += formatContent(content);
+            }
+    
+            if (args) {
+                markdown += formatContent(JSON.parse(args)); // args könnte ein JSON-String sein
+            }
+    
+            return markdown;
+        }).join("\n"); // Teile die Ergebnisse durch Zeilenumbrüche
+      }
       function updateChatbox() {
         const chatbox = $('#chatbox');
         chatbox.empty(); // Leere die Chatbox, bevor neue Nachrichten hinzugefügt werden
 
-        timeline.forEach(entry => {
+        timeline.forEach((entry, index)  => {
             const { timestamp, parts, tool_call_id, tool_name } = entry;
-
             // Überprüfen, ob es sich um einen Tool-Call handelt
             if (tool_call_id) {
-              const combinedContent = parts.map(part => part.content).join("<br>"); // Kombiniere die Inhalte mit einem Zeilenumbruch
-              const formattedContent = formatContent(combinedContent); // Verwende formatContent, um den kombinierten Inhalt zu formatieren
-              const toolHtml = createToolHtml(formattedContent, `tool-${tool_call_id}`, tool_name || 'Unknown Tool', timestamp);
+              const combinedMarkdown = combineParts(entry.parts);
+              const toolHtml = createToolHtml(combinedMarkdown, `timeline-${index}`,`tool-${tool_call_id}`, tool_name || 'Unknown Tool', timestamp);
               toolHtml.on("click", function () {
                 self.toggleDetails(`tool-${tool_call_id}`);
               });
@@ -275,7 +367,7 @@ ckan.module("chat-module", function ($, _) {
                     if (part.part_kind === "system-prompt") {
                       return; // Keine Nachricht rendern
                     }
-                    const Msg = part.part_kind === "user-prompt" ? createMessageHtml(true, part.content, `user-msg-${part.id}`) : createMessageHtml(false, part.content, `bot-msg-${part.id}`);
+                    const Msg = part.part_kind === "user-prompt" ? createMessageHtml(true, part.content, `timeline-${index}`) : createMessageHtml(false, part.content,`timeline-${index}`);
                     chatbox.append(Msg);
                 });
             }
@@ -333,9 +425,6 @@ ckan.module("chat-module", function ($, _) {
 
       // Sortiere die Timeline nach Timestamp
       timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-      
-      console.log(timeline);
-      
       updateChatbox();
       
       //     combinedCardHtml.on("click", function () {
@@ -366,8 +455,6 @@ ckan.module("chat-module", function ($, _) {
           $(this).attr("data-highlighted", "true");
         }
       });
-    
-      self.addCopyButtonsToCodeBlocks();
       chatbox.scrollTop(chatbox[0].scrollHeight);
       $('[data-bs-toggle="tooltip"]').tooltip();
     },
@@ -379,35 +466,6 @@ ckan.module("chat-module", function ($, _) {
         new bootstrap.Collapse(collapseElement, { toggle: true });
       }
     },
-
-    // Add copy buttons to code blocks
-    addCopyButtonsToCodeBlocks: function () {
-      this.el.find("pre code").each(function () {
-        var codeBlock = $(this);
-        if (codeBlock.parent().find(".copy-button").length > 0) return;
-        var copyButton = $(
-          '<button class="copy-button"><i class="fas fa-copy"></i></button>',
-        );
-        copyButton.on("click", function () {
-          navigator.clipboard
-            .writeText(codeBlock.text())
-            .then(function () {
-              copyButton.html('<i class="fas fa-check"></i>');
-              setTimeout(function () {
-                copyButton.html('<i class="fas fa-copy"></i>');
-              }, 2000);
-            })
-            .catch(function (err) {
-              console.error("Failed to copy: ", err);
-            });
-        });
-        var preElement = codeBlock.parent();
-        preElement.css("position", "relative");
-        copyButton.css({ position: "absolute", top: "5px", right: "5px" });
-        preElement.append(copyButton);
-      });
-    },
-
     // Retrieve text from the last entry (used for renaming the chat)
     getLastEntryText: function (array) {
       var lastEntry = array[array.length - 1];
@@ -493,13 +551,8 @@ ckan.module("chat-module", function ($, _) {
         "chat/ask",
         { text: text, history: JSON.stringify(history) },
         function (data) {
-          self.saveChat(data.response, label);
-          data.response.forEach(function (msg) {
-            // Skip the first element by checking the index because its the lat user prompt
-            // if (index === 0) return;
-            self.appendMessage(msg);
-          });
-          // self.appendMessage("bot", data.response[data.response.length - 1].parts);
+          const chatindex=self.saveChat(data.response, label);
+          self.loadChat(chatindex)
           if (callback) callback();
         },
       );
@@ -518,6 +571,7 @@ ckan.module("chat-module", function ($, _) {
       chats[existingChatIndex].messages =
         chats[existingChatIndex].messages.concat(newMessages);
       localStorage.setItem("previousChats", JSON.stringify(chats));
+      return existingChatIndex
     },
 
     // Regenerate the failed message (if any)
@@ -564,7 +618,7 @@ ckan.module("chat-module", function ($, _) {
       localStorage.setItem("previousChats", JSON.stringify(chats));
 
       // Refresh the chat UI
-      this.el.find("#chatbox").empty();
+      // this.el.find("#chatbox").empty();
       this.loadChat(chatIndex);
 
       // Retrieve the user prompt text from the removed message
@@ -577,7 +631,6 @@ ckan.module("chat-module", function ($, _) {
         alert("User prompt text is empty.");
         return;
       }
-      console.log(userText)
       // Set the user input field and call sendMessage (which triggers the spinner)
       this.el.find("#userInput").val(userText);
       this.sendMessage();
