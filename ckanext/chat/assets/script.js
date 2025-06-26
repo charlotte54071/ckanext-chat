@@ -56,22 +56,25 @@ ckan.module("chat-module", function ($, _) {
   }
   function copyToClipboard(text, button) {
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).then(function () {
-        button.html('<i class="fas fa-check"></i>');
-        setTimeout(function () {
-          button.html('<i class="fas fa-copy"></i>');
-        }, 2000);
-      }).catch(function (err) {
-        console.error("Failed to copy: ", err);
-      });
+      navigator.clipboard
+        .writeText(text)
+        .then(function () {
+          button.html('<i class="fas fa-check"></i>');
+          setTimeout(function () {
+            button.html('<i class="fas fa-copy"></i>');
+          }, 2000);
+        })
+        .catch(function (err) {
+          console.error("Failed to copy: ", err);
+        });
     } else {
       // Fallback for unsupported browsers
-      var $tempInput = $('<textarea>');
-      $('body').append($tempInput);
+      var $tempInput = $("<textarea>");
+      $("body").append($tempInput);
       $tempInput.val(text).select();
 
       try {
-        document.execCommand('copy');
+        document.execCommand("copy");
         button.html('<i class="fas fa-check"></i>');
         setTimeout(function () {
           button.html('<i class="fas fa-copy"></i>');
@@ -146,47 +149,51 @@ ckan.module("chat-module", function ($, _) {
       var self = this; // Store the context
 
       this.el.find(".bot-answer").each(function () {
-          var botAnswer = $(this);
-          
-          // Check if a copy button already exists
-          if (botAnswer.find(".copy-button").length > 0) return;
+        var botAnswer = $(this);
 
-          // Create the copy button
-          var copyButton = $('<button class="copy-button"><i class="fas fa-copy"></i></button>');
-          
-          // Event handler for the copy button
-          copyButton.on("click", () => {
-              // Extract the text from the .text class within the bot-answer
-              var textToCopy = botAnswer.find('.text').text().trim(); 
-              
-              copyToClipboard(textToCopy, copyButton); // Call the function directly
-          });
+        // Check if a copy button already exists
+        if (botAnswer.find(".copy-button").length > 0) return;
 
-          // Position the copy button
-          botAnswer.css("position", "relative");
-          copyButton.css({ position: "absolute", top: "5px", right: "5px" });
-          botAnswer.append(copyButton);
+        // Create the copy button
+        var copyButton = $(
+          '<button class="copy-button"><i class="fas fa-copy"></i></button>',
+        );
+
+        // Event handler for the copy button
+        copyButton.on("click", () => {
+          // Extract the text from the .text class within the bot-answer
+          var textToCopy = botAnswer.find(".text").text().trim();
+
+          copyToClipboard(textToCopy, copyButton); // Call the function directly
+        });
+
+        // Position the copy button
+        botAnswer.css("position", "relative");
+        copyButton.css({ position: "absolute", top: "5px", right: "5px" });
+        botAnswer.append(copyButton);
       });
     },
 
     addCopyButtonsToCodeBlocks: function () {
       var self = this; // Store the context
       this.el.find("pre code").each(function () {
-          var codeBlock = $(this);
-          if (codeBlock.parent().find(".copy-button").length > 0) return;
+        var codeBlock = $(this);
+        if (codeBlock.parent().find(".copy-button").length > 0) return;
 
-          var copyButton = $('<button class="copy-button"><i class="fas fa-copy"></i></button>');
-          
-          copyButton.on("click", () => {
-              // Copy the text from the code block
-              var textToCopy = codeBlock.text().trim();
-              copyToClipboard(textToCopy, copyButton); // Call the function directly
-          });
+        var copyButton = $(
+          '<button class="copy-button"><i class="fas fa-copy"></i></button>',
+        );
 
-          var preElement = codeBlock.parent();
-          preElement.css("position", "relative");
-          copyButton.css({ position: "absolute", top: "5px", right: "5px" });
-          preElement.append(copyButton);
+        copyButton.on("click", () => {
+          // Copy the text from the code block
+          var textToCopy = codeBlock.text().trim();
+          copyToClipboard(textToCopy, copyButton); // Call the function directly
+        });
+
+        var preElement = codeBlock.parent();
+        preElement.css("position", "relative");
+        copyButton.css({ position: "absolute", top: "5px", right: "5px" });
+        preElement.append(copyButton);
       });
     },
 
@@ -271,14 +278,9 @@ ckan.module("chat-module", function ($, _) {
       return convertTimestampsToISO(storedData);
     },
     appendMessage: function (message) {
-
-      // if (!Array.isArray(message)) {
-      //   message = [{ content: message }];
-      // }
       var chatbox = this.el.find("#chatbox");
       var self = this;
-      var userMsg = false; // Variable initialisieren
-      
+
       function createMessageHtml(userMsg, markdown, id) {
         return $(`
             <div id="${id}" class="message ${userMsg ? "user-message" : "bot-message bot-answer"}">
@@ -288,8 +290,15 @@ ckan.module("chat-module", function ($, _) {
               </div>
             </div>
         `);
-      };
-      function createToolHtml(markdown, id, tool_id, tool_name, timestamp, succeeded = true) {
+      }
+      function createToolHtml(
+        markdown,
+        id,
+        tool_id,
+        tool_name,
+        timestamp,
+        succeeded = true,
+      ) {
         const statusClass = succeeded ? "border-success" : "border-danger";
         return $(`
           <div id="${id}" class="message bot-message">
@@ -312,14 +321,17 @@ ckan.module("chat-module", function ($, _) {
           if (Array.isArray(content)) {
             return (
               "<ul>" +
-              content.map(item => "<li>" + formatContent(item) + "</li>").join("") +
+              content
+                .map((item) => "<li>" + formatContent(item) + "</li>")
+                .join("") +
               "</ul>"
             );
           } else {
             var html = "<ul>";
             for (var key in content) {
               if (content.hasOwnProperty(key)) {
-                html += "<li>" + key + ": " + formatContent(content[key]) + "</li>";
+                html +=
+                  "<li>" + key + ": " + formatContent(content[key]) + "</li>";
               }
             }
             html += "</ul>";
@@ -330,95 +342,103 @@ ckan.module("chat-module", function ($, _) {
         }
       }
       function combineParts(parts) {
-        return parts.map(part => {
+        return parts
+          .map((part) => {
             // Extrahiere die relevanten Eigenschaften
             const { content, args } = part;
-    
             // Erstelle eine Markdown-Darstellung
-            let markdown = '';
-    
+            let markdown = "";
             if (content) {
-                markdown += formatContent(content);
+              markdown += formatContent(content);
             }
-    
             if (args) {
-                markdown += formatContent(JSON.parse(args)); // args könnte ein JSON-String sein
+              markdown += formatContent(JSON.parse(args)); // args könnte ein JSON-String sein
             }
-    
             return markdown;
-        }).join("\n"); // Teile die Ergebnisse durch Zeilenumbrüche
+          })
+          .join("\n"); // Teile die Ergebnisse durch Zeilenumbrüche
       }
       function updateChatbox() {
-        const chatbox = $('#chatbox');
+        const chatbox = $("#chatbox");
         chatbox.empty(); // Leere die Chatbox, bevor neue Nachrichten hinzugefügt werden
 
-        timeline.forEach((entry, index)  => {
-            const { timestamp, parts, tool_call_id, tool_name } = entry;
-            // Überprüfen, ob es sich um einen Tool-Call handelt
-            if (tool_call_id) {
-              const combinedMarkdown = combineParts(entry.parts);
-              const toolHtml = createToolHtml(combinedMarkdown, `timeline-${index}`,`tool-${tool_call_id}`, tool_name || 'Unknown Tool', timestamp);
-              toolHtml.on("click", function () {
-                self.toggleDetails(`tool-${tool_call_id}`);
-              });
-              chatbox.append(toolHtml);
-            } else {
-                parts.forEach(part => {
-                    if (part.part_kind === "system-prompt") {
-                      return; // Keine Nachricht rendern
-                    }
-                    const Msg = part.part_kind === "user-prompt" ? createMessageHtml(true, part.content, `timeline-${index}`) : createMessageHtml(false, part.content,`timeline-${index}`);
-                    chatbox.append(Msg);
-                });
-            }
+        timeline.forEach((entry, index) => {
+          const { timestamp, parts, tool_call_id, tool_name } = entry;
+          // Überprüfen, ob es sich um einen Tool-Call handelt
+          if (tool_call_id) {
+            const combinedMarkdown = combineParts(entry.parts);
+            const toolHtml = createToolHtml(
+              combinedMarkdown,
+              `timeline-${index}`,
+              `tool-${tool_call_id}`,
+              tool_name || "Unknown Tool",
+              timestamp,
+            );
+            toolHtml.on("click", function () {
+              self.toggleDetails(`tool-${tool_call_id}`);
+            });
+            chatbox.append(toolHtml);
+          } else {
+            parts.forEach((part) => {
+              if (part.part_kind === "system-prompt") {
+                return; // Keine Nachricht rendern
+              }
+              const Msg =
+                part.part_kind === "user-prompt"
+                  ? createMessageHtml(true, part.content, `timeline-${index}`)
+                  : createMessageHtml(false, part.content, `timeline-${index}`);
+              chatbox.append(Msg);
+            });
+          }
         });
       }
       const { timestamp, parts } = message;
-
-      parts.forEach(part => {
-          const { tool_call_id } = part;
-
-          // Wenn die tool_call_id existiert, kombiniere die Teile
-          if (tool_call_id) {
-              const existingEntry = timeline.find(entry => entry.tool_call_id === tool_call_id);
-              if (existingEntry) {
-                  // Füge den aktuellen Teil zur bestehenden Eintragung hinzu
-                  existingEntry.parts.push(part);
-              } else {
-                  // Erstelle eine neue Eintragung für diesen tool_call_id
-                  timeline.push({
-                      tool_call_id: tool_call_id,
-                      timestamp: timestamp,
-                      parts: [part],
-                      tool_name: part.tool_name
-                  });
-              }
+      parts.forEach((part) => {
+        const { tool_call_id } = part;
+        // Wenn die tool_call_id existiert, kombiniere die Teile
+        if (tool_call_id) {
+          const existingEntry = timeline.find(
+            (entry) => entry.tool_call_id === tool_call_id,
+          );
+          if (existingEntry) {
+            // Füge den aktuellen Teil zur bestehenden Eintragung hinzu
+            existingEntry.parts.push(part);
           } else {
-          timeline.push({
+            // Erstelle eine neue Eintragung für diesen tool_call_id
+            timeline.push({
+              tool_call_id: tool_call_id,
               timestamp: timestamp,
-              parts: [part]    
-          });
+              parts: [part],
+              tool_name: part.tool_name,
+            });
           }
+        } else {
+          timeline.push({
+            timestamp: timestamp,
+            parts: [part],
+          });
+        }
       });
       // Entferne Duplikate aus den parts-Arrays
-        timeline.forEach(entry => {
-          const uniqueParts = Array.from(new Set(entry.parts.map(part => JSON.stringify(part)))).map(part => JSON.parse(part));
-          entry.parts = uniqueParts;
+      timeline.forEach((entry) => {
+        const uniqueParts = Array.from(
+          new Set(entry.parts.map((part) => JSON.stringify(part))),
+        ).map((part) => JSON.parse(part));
+        entry.parts = uniqueParts;
       });
-
       // Entferne Duplikate aus den parts-Arrays basierend auf part_kind und Zeitstempel
-      timeline.forEach(entry => {
+      timeline.forEach((entry) => {
         const latestParts = {}; // Ein Objekt, um den neuesten Teil für jeden part_kind zu speichern
-
-        entry.parts.forEach(part => {
-            const { part_kind, timestamp } = part;
-
-            // Überprüfen, ob wir bereits einen Teil für diesen part_kind haben
-            if (!latestParts[part_kind] || new Date(timestamp) > new Date(latestParts[part_kind].timestamp)) {
-                latestParts[part_kind] = part; // Speichere den Teil, wenn er der neueste ist
-            }
+        entry.parts.forEach((part) => {
+          const { part_kind, timestamp } = part;
+          // Überprüfen, ob wir bereits einen Teil für diesen part_kind haben
+          if (
+            !latestParts[part_kind] ||
+            new Date(timestamp) > new Date(latestParts[part_kind].timestamp)
+          ) {
+            latestParts[part_kind] = part; // Speichere den Teil, wenn er der neueste ist
+          }
         });
-
         // Konvertiere das Object zurück in ein Array
         entry.parts = Object.values(latestParts);
       });
@@ -426,29 +446,6 @@ ckan.module("chat-module", function ($, _) {
       // Sortiere die Timeline nach Timestamp
       timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       updateChatbox();
-      
-      //     combinedCardHtml.on("click", function () {
-      //       self.toggleDetails(collapseId);
-      //     });
-    
-      //     chatbox.append(combinedCardHtml);
-    
-      //   } else if (entry.type === "nonToolPart") {
-      //     const part = entry.data;
-    
-      //     const messageHtml = $(`
-      //       <div class="message ${userMsg ? "user-message" : "bot-message"}">
-      //         <span class="col-2 chatavatar"><i class=" fas fa-${userMsg ? "user" : "robot"}"></i></span>
-      //         <div class="col-auto text">
-      //           ${renderMarkdown(part.content)}
-      //         </div>
-      //       </div>
-      //     `);
-    
-      //     chatbox.append(messageHtml);
-      //   }
-      // });
-    
       chatbox.find("pre code").each(function () {
         if (!$(this).attr("data-highlighted")) {
           hljs.highlightElement(this);
@@ -458,7 +455,7 @@ ckan.module("chat-module", function ($, _) {
       chatbox.scrollTop(chatbox[0].scrollHeight);
       $('[data-bs-toggle="tooltip"]').tooltip();
     },
-    
+
     // Toggle collapsible details for tool messages.
     toggleDetails: function (collapseId) {
       var collapseElement = document.getElementById(collapseId);
@@ -486,13 +483,13 @@ ckan.module("chat-module", function ($, _) {
           instructions: null,
           kind: "request",
           parts: [
-              {
-                  content: text,
-                  part_kind: "user-prompt",
-                  timestamp: new Date().toUTCString()
-              },
-          ]
-        };      
+            {
+              content: text,
+              part_kind: "user-prompt",
+              timestamp: new Date().toUTCString(),
+            },
+          ],
+        };
         self.appendMessage(messageObject);
         var chatHistory = self.getChatHistory();
         var sendButton = this.el.find("#sendButton");
@@ -551,8 +548,8 @@ ckan.module("chat-module", function ($, _) {
         "chat/ask",
         { text: text, history: JSON.stringify(history) },
         function (data) {
-          const chatindex=self.saveChat(data.response, label);
-          self.loadChat(chatindex)
+          const chatindex = self.saveChat(data.response, label);
+          self.loadChat(chatindex);
           if (callback) callback();
         },
       );
@@ -571,7 +568,7 @@ ckan.module("chat-module", function ($, _) {
       chats[existingChatIndex].messages =
         chats[existingChatIndex].messages.concat(newMessages);
       localStorage.setItem("previousChats", JSON.stringify(chats));
-      return existingChatIndex
+      return existingChatIndex;
     },
 
     // Regenerate the failed message (if any)
@@ -583,7 +580,6 @@ ckan.module("chat-module", function ($, _) {
         alert("No chat history available.");
         return;
       }
-
       // Locate the last message containing a part with "user-prompt"
       var lastUserIndex = -1;
       for (var i = chatHistory.length - 1; i >= 0; i--) {
@@ -672,16 +668,18 @@ ckan.module("chat-module", function ($, _) {
     // Start a new chat session
     newChat: function () {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
-      chats.push({ title: "Current Chat", messages: [] });
+      const newchatlabel = "Current Chat";
+      var chatIndex = chats.findIndex(function (chat) {
+        return chat.title === newchatlabel;
+      });
+      if (chatIndex === -1) {
+        chats.push({ title: newchatlabel, messages: [] });
+      } else {
+        chats[chatIndex].messages = [];
+      }
       localStorage.setItem("previousChats", JSON.stringify(chats));
-      this.el.find("#chatbox").empty();
-      this.el.find("#userInput").val("");
-
-      // Highlight the new chat as active
-      this.currentChatLabel = "Current Chat";
       this.loadPreviousChats();
-      $("#chatList li").removeClass("active"); // Remove active class from all
-      $("#chatList li").last().addClass("active"); // Add active class to the new chat
+      this.loadChat();
     },
   };
 });
