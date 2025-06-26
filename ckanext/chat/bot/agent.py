@@ -2,28 +2,23 @@ import asyncio
 import json
 import os
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal
 
 import aiofiles
 import aiohttp
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
 # import logfire
-import regex
 # import nest_asyncio
 import requests
-import tiktoken
-from ckan.lib.lazyjson import LazyJSONObject
-from ckan.model.package import Package
-from ckan.model.resource import Resource
+
 from flask import Flask
 from loguru import logger
+
 from openai.resources.embeddings import Embeddings as OAI_Embeddings
-from pydantic import (BaseModel, HttpUrl, ValidationError, computed_field,
-                      root_validator)
+from pydantic import (BaseModel, HttpUrl)
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
                                     ModelHTTPError, ModelRetry,
@@ -36,6 +31,8 @@ from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
+from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, find_route_by_endpoint, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature
+
 
 log = logger.bind(module=__name__)
 
@@ -49,129 +46,7 @@ os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://docker-dev.iwm.fraunhofer.de
 # logfire.instrument_httpx(capture_all=True)
 # --------------------- Helper Functions ---------------------
 
-
 app = Flask(__name__)
-
-
-def truncate_output_by_token(
-    output: str, token_limit: int, offset: int = 0, encoding_name="cl100k_base"
-) -> str:
-    encoding = tiktoken.get_encoding(encoding_name)
-    tokens = encoding.encode(output)
-
-    if len(tokens) > token_limit:
-        # Skip the specified number of tokens
-        truncated_tokens = tokens[offset : offset + token_limit]
-        output = encoding.decode(truncated_tokens)
-        # if last page of tokens, add a mark
-        if len(truncated_tokens) < token_limit:
-            output += "\n\n**End of Output**"
-
-    return output
-
-
-def truncate_value(value, max_length):
-    if isinstance(value, str):
-        return value[:max_length] + "..." if len(value) > max_length else value
-    elif isinstance(value, list):
-        truncated_list = [truncate_value(item, max_length) for item in value]
-        return (
-            truncated_list[:max_length] + ["..."]
-            if len(truncated_list) > max_length
-            else truncated_list
-        )
-    return value
-
-
-def truncate_by_depth(data, max_depth, current_depth=0, placeholder="..."):
-    if current_depth >= max_depth:
-        return placeholder
-    if isinstance(data, dict):
-        return {
-            key: truncate_by_depth(
-                truncate_value(value, max_length=200),
-                max_depth,
-                current_depth + 1,
-                placeholder,
-            )
-            for key, value in data.items()
-        }
-    if isinstance(data, list):
-        data = truncate_value(data, max_length=200)
-        return [
-            truncate_by_depth(item, max_depth, current_depth + 1, placeholder)
-            for item in data
-        ]
-    return data
-
-
-def unpack_lazy_json(obj):
-    if isinstance(obj, dict):
-        return {key: unpack_lazy_json(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [unpack_lazy_json(item) for item in obj]
-    elif isinstance(obj, LazyJSONObject):
-        return obj.encoded_json
-    return obj
-
-
-def process_entity(data: Any) -> Any:
-    if isinstance(data, dict):
-        data = unpack_lazy_json(data)
-        if "resources" in data:
-            try:
-                log.debug("DynamicDataset")
-                dataset_dict = DynamicDataset(**data).model_dump(
-                    exclude_unset=True, exclude_defaults=False, exclude_none=True
-                )
-                dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
-                return process_entity(dataset_dict)
-            except ValidationError as validation_error:
-                log.warning(
-                    f"Validation error converting to DynamicDataset: {validation_error.json()}"
-                )
-            except Exception as ex:
-                log.warning(f"Conversion to DynamicDataset failed: {ex}")
-        elif "package_id" in data or "url" in data:
-            try:
-                log.debug("DynamicResource")
-                resource_dict = DynamicResource(**data).model_dump(
-                    exclude_unset=True, exclude_defaults=False, exclude_none=True
-                )
-                resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
-                return process_entity(resource_dict)
-            except ValidationError as validation_error:
-                log.warning(
-                    f"Validation error converting to DynamicResource: {validation_error.json()}"
-                )
-            except Exception as ex:
-                log.warning(f"Conversion to DynamicResource failed: {ex}")
-
-        new_dict = {}
-        for key, value in data.items():
-            processed_value = process_entity(value)
-            if processed_value not in ([], {}, "", None):
-                new_dict[key] = processed_value
-        return new_dict
-    elif isinstance(data, list):
-        new_list = []
-        for item in data:
-            processed_item = process_entity(item)
-            if processed_item not in ([], {}, "", None):
-                new_list.append(processed_item)
-        return new_list
-    else:
-        return data
-
-
-def download_file(url: str, headers: dict = None, verify: bool = True):
-    try:
-        response = requests.get(url, headers=headers, verify=verify, timeout=5)
-        response.raise_for_status()
-        return response.text
-    except Exception as e:
-        return str(e)
-
 
 # --------------------- Model & Agent Setup ---------------------
 
@@ -238,11 +113,29 @@ else:
 
 @dataclass
 class TextSlice:
+    url: HttpUrl
     text: str
     offset: int
     length: int
+    doc_position: float
+    update_url_on_init: bool = field(default=True, repr=False)
 
+    def __post_init__(self):
+        if not self.update_url_on_init:
+            return
+        res_uuid = extract_resource_uuid(str(self.url))
+        pkg_uuid = extract_dataset_uuid(str(self.url))
+        ckan_url = toolkit.config.get("ckan.site_url")
+        if res_uuid and pkg_uuid:
+            endpoint = "markdown_view.highlight"
+            route = get_ckan_url_patterns(endpoint)
+            # if route_info is a string, it's an error message
+            if isinstance(route, RouteModel):
+                fill_vars = {"pkg_id": pkg_uuid, "id": res_uuid, "start": self.offset, "end": self.offset+self.length} # Replace with correct variable names for this route
+                self.url = route.build_url(base_url=ckan_url,fill=fill_vars)
 
+    
+    
 @dataclass
 class TextResource:
     url: HttpUrl = None
@@ -262,9 +155,11 @@ class TextResource:
     def extract_substring(self, offset: int, length: int) -> TextSlice:
         if self.text is None:
             raise ValueError("Text not loaded")
-        text_slice = self.text[offset : offset + length]
-        return TextSlice(text=text_slice, offset=offset, length=len(text_slice))
-
+        text_slice = self.text[offset:offset + length]
+        position=float(offset + len(text_slice)) / float(self.length)
+        log.debug(f'extracted substring with offset {offset} and length {length}, end position relativ to document {position}')
+        return TextSlice(url=self.url,text=text_slice, offset=offset, length=len(text_slice),doc_position=position)
+    
     def __getstate__(self):
         # Exclude _text from serialization
         state = self.__dict__.copy()
@@ -282,28 +177,7 @@ class Deps:
     max_context_length: int = 8192
     collection_name: str = collection_name
     vector_dim: int = vector_dim
-    file: Optional[TextResource] = None
-
-
-# --------------------- Dynamic Models Initialization ---------------------
-
-dynamic_models_initialized = False
-
-
-def init_dynamic_models():
-    global dynamic_models_initialized
-    if not dynamic_models_initialized:
-        get_ckan_url_patterns()
-        try:
-            package_list = toolkit.get_action("package_list")({}, {})
-            if package_list:
-                sample_pkg = toolkit.get_action("package_show")(
-                    {}, {"id": package_list[0]}
-                )
-                _ = DynamicDataset(**sample_pkg)
-        except Exception as e:
-            log.warning(f"Could not initialize sample dynamic models: {e}")
-        dynamic_models_initialized = True
+    #file: Optional[TextResource] = None
 
 
 # --------------------- Vector & RAG Models ---------------------
@@ -333,7 +207,7 @@ class LitResult(BaseModel):
     summary: str = ""
     authors: str = ""
     source: Optional[HttpUrl] = None
-    view_url: Optional[list[HttpUrl]] = None
+    #view_url: Optional[list[HttpUrl]] = None
 
 
 class LitSearchResult(BaseModel):
@@ -342,106 +216,171 @@ class LitSearchResult(BaseModel):
     results: Optional[list[LitResult]] = None
     error: Optional[List[str]] = None
 
+class AnalyseResult(BaseModel):
+    answer: str = ""
+    source: HttpUrl
+    text_slices: Optional[list[TextSlice]] = None
+    error: Optional[List[str]] = None
 
-# --------------------- System Prompt & Agent ---------------------
+class CKANResult(BaseModel):
+    #answer: str
+    status: Literal['success', 'fail', 'suggest']
+    action_name: str = ""
+    parameters: Optional[Dict[str,Any]] = {} 
+    doc: FuncSignature
+    result: str
 
-front_prompt = (
+# --------------------- Updated RAG Agent Prompt ---------------------
+rag_prompt = (
     "Role:\n\n"
-    "You are an assistant to a CKAN software instance that executes tool commands and assesses their success or failure. For other task your handing over tasks to the other agents like 'literature_search' or 'literature_analysis', you will have to think about how to facilitate them to use ur goals and instruct them with the correct questions.\n"
-    "Dont output your thinking output, focus on presenting results!\n"
-    "\n"
-    "Key Guidelines:\n\n"
-    "- Resource Access and Navigation:\n"
-    "  - Provide access to resource view URLs using `get_ckan_url_patterns`.\n"
-    "  - Utilize `markdown_view.highlight` for key text sections when constructing reports: `/dataset/<pkg_id>/resource/<id>/highlight/<int:start>/<int:end>`.\n"
-    "\n"
-    "- Action Prioritization:\n"
-    "  - Favor view URLs over download URLs utilizing the `resource_view_list`.\n"
-    "  - Link URLs directly to relevant document sections clearly.\n"
-    "\n"
+    "You perform literature retrieval using a vector store and return scientific citations in markdown format.\n"
+    "- Use rag_search with the original question.\n"
+    "- Aggregate results by `source` into LitResult objects.\n"
+    "- For each source, return a markdown citation in the format: [1](url)\n"
+    "- Add a summary why the source is relevant.\n"
+    "- Retry search if fewer than N distinct sources are returned.\n"
+)
+
+# --------------------- Updated Document Agent Prompt ---------------------
+
+doc_prompt = (
+    "Role:\n\n"
+    "You are a document analysis agent tasked with answering a question based on a long document `doc`. "
+    "Your goal is to find and cite the most relevant passages from anywhere in the document — not just the beginning — "
+    "using an adaptive strategy like a human researcher would.\n\n"
+
+    "Instructions:\n\n"
+    "1. Begin by searching for a **Table of Contents** (ToC) or **summary sections**.\n"
+    "   - Use `get_text_slice(doc, offset=0, length=10000)` to fetch the beginning for this purpose.\n"
+    "   - If a ToC exists, extract its structure to guide your navigation.\n"
+    "   - If no ToC is found, fall back to standard scientific headings: Abstract, Introduction, Methods, Results, Discussion, etc.\n\n"
+
+    "2. Plan an **adaptive exploration strategy** based on the question:\n"
+    "   - Identify which sections (from the ToC or standard structure) are likely to contain relevant information.\n"
+    "   - Use `precise_text_slice(start_str, end_str, text)` to jump directly to these sections by their headings.\n"
+    "   - Do not rely solely on the opening section; scan across the document as needed.\n\n"
+
+    "3. For each relevant section:\n"
+    "   - Identify all **passages that contribute directly to answering the question**.\n"
+    "   - Extract them using `precise_text_slice(start_str, end_str, text)` with exact 10–20 character substrings.\n"
+    "   - Record them as `text_slice` objects.\n\n"
+
+    "4. Write your answer:\n"
+    "   - Synthesize the findings into a coherent response.\n"
+    "   - Include markdown-style citations to each passage: `[source](text_slice.url)`.\n"
+    "   - Every major claim or quoted content must be cited.\n\n"
+
+    "5. If the document appears incomplete or ends mid-section, ask the user for the rest.\n\n"
+
+    "Important:\n"
+    "- Your goal is to **simulate how a skilled researcher would navigate and extract evidence**.\n"
+    "- Use the ToC (if available) or section headings to jump around. Avoid linear reading unless the document is very short.\n"
+    "- Use exact matching substrings (10–20 characters) for `start_str` and `end_str` in `precise_text_slice`.\n"
+    "- Always include the document's `doc.url` as `source` in your output.\n"
+)
+
+
+# --------------------- Updated Front Agent ---------------------
+front_agent_prompt = (
+    "You are a coordinator agent.\n"
+    "- For RAG lookups, call `literature_search`.\n"
+    "- For every question about a certain document you must use `literature_analyse`. Provide a link to the document of type text that enables download of the raw text.\n"
+    "- For CKAN actions, formulate a clear command to `ckan_run` adding all the relevant information you got.\n"
+    "- Present results with inline markdown citations where appropriate.\n"
     "- Execution and Verification:\n"
     "  - Present updates and changes, requesting user confirmation before proceeding.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
+    "Guidelines:\n"
+    "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
+    #"- add the documentation of the function to your output"
+    "- if asked for url creation ask 'ckan_run'"
+    "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
     "\n"
-    "- Data Search and Retrieval:\n"
-    "  - Use `package_search` with `include_private=true` for comprehensive dataset searches.\n"
-    "  - If no specific resource is indicated, initiate `literature_search`.\n"
-    "\n"
-    "- Document Analysis:\n"
-    "  - For answering document-related inquiries, utilize `literature_analyse` to analyze the entire document comprehensively.\n"
-    "  - Begin with an offset of 0 and a suitable max_length (e.g., a fixed number of characters or tokens appropriate for processing).\n"
-    "  - Call `literature_analyse` with the current offset and max_length, capturing the analysis results for that chunk.\n"
-    "  - After each call, check the returned `doc_position` (a value indicating the portion of the document analyzed, where 1.0 represents the end).\n"
-    "  - If `doc_position` < 1.0, increase the offset by max_length and repeat the analysis on the next chunk.\n"
-    "  - Continue this process until `doc_position` >= 1.0, ensuring the full document is covered.\n"
-    "  - Compile the findings from all chunks systematically to formulate a complete answer, addressing both vague queries (e.g., presence and location of topics) and detailed queries requiring full context.\n"
-    "\n"
-    "Your Toolset:\n\n"
-    "1. **List CKAN Actions:**\n"
-    "   - **Function:** `get_ckan_actions() -> List[str]`\n"
-    "   - Retrieve available CKAN action names.\n"
-    "\n"
-    "2. **Get Function Information:**\n"
-    "   - **Function:** `get_action_info(action_key: str) -> dict`\n"
-    "   - Access detailed information on specified CKAN actions.\n"
-    "\n"
-    "3. **Execute CKAN Actions:**\n"
-    "   - **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "   - Execute CKAN actions with specified parameters.\n"
-    "\n"
-    "4. **URL Patterns Retrieval:**\n"
-    "   - **Function:** `get_ckan_url_patterns() -> List[RouteModel]`\n"
-    "   - Fetch URL patterns in CKAN.\n"
-    "\n"
-    "5. **Download Resource Contents:**\n"
-    "   - **Function:** `get_resource_file_contents`\n"
-    "   - Retrieve file content, needs to be run again every time new user input is presented, notify if SSL verification is disabled.\n"
-    "\n"
-    "6. **Document Searches:**\n"
-    "   - **Function:** `literature_search(search_question: str, num_results: int=5) -> list[str]`\n"
-    "   - Conduct literature searches.\n"
-    "\n"
-    "7. **Comprehensive Document Analysis:**\n"
-    "   - **Function:** `literature_analyse`\n"
-    "   - Engage document analysis in one full, logical flow to address the inquiry, ensuring coherence and completeness.\n"
+)
+
+
+# --------------------- System Prompt & Agent ---------------------
+
+# ckan_agent_prompt = (
+#     "Role:\n\n"
+#     "You are an assistant to a CKAN software instance that executes tool commands, assesses their success or failure.\n"
+#     "Try to match an fitting action for the command given.\n"
+#     "If you Fail to run a an action suggest an action to run by returning the appropiate action and the result of 'get_action_info'."
+#     "Also make sugestions on actions to get details on the returned objects, like for datasets aka package the action package_show.\n"
+#     "Dont output your thinking output, focus on presenting results!\n"
+#     "\n"
+#     "Key Guidelines:\n\n"
+#     "- Execution and Verification:\n"
+#     "  - Present updates and changes, requesting user confirmation before proceeding.\n"
+#     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
+#     "\n"
+#     "- Data Search and Retrieval:\n"
+#     "  - Use `package_search` with `include_private=true` for comprehensive dataset searches.\n"
+#     "\n"
+#     "Your Toolset:\n\n"
+#     "1. **List CKAN Actions:**\n"
+#     "   - **Function:** `get_ckan_actions() -> List[str]`\n"
+#     "   - Retrieve available CKAN action names.\n"
+#     "\n"
+#     "2. **Get Function Information:**\n"
+#     "   - **Function:** `get_action_info(action_key: str) -> dict`\n"
+#     "   - Access detailed information on specified CKAN actions.\n"
+#     "\n"
+#     "3. **Execute CKAN Actions:**\n"
+#     "   - **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
+#     "   - Execute CKAN actions with specified parameters.\n"
+#     "\n"
+# )
+
+ckan_agent_prompt = (
+    "Role:\n\n"
+    "You are an assistant to a CKAN software instance. You execute CKAN actions, evaluate their success, "
+    "and suggest appropriate alternatives when needed.\n\n"
+
+    "Behavior:\n"
+    "- Attempt to run the specified CKAN action with the given parameters.\n"
+    "- If the action fails or is invalid:\n"
+    "  - Suggest a likely correct action.\n"
+    "  - Use `get_action_info` to explain what the suggested action does.\n"
+    "- If your action returns datasets or other CKAN objects, suggest relevant follow-up actions, e.g., "
+    "`package_show` for dataset details.\n"
+    "- **Do not output internal reasoning. Focus only on clean, result-oriented output.**\n\n"
+
+    "Execution Guidelines:\n"
+    "- Present updates and changes clearly.\n"
+    "- Always request confirmation if SSL verification is disabled (e.g., `ssl_verify=False`).\n\n"
+
+    "Data Search:\n"
+    "- When searching for datasets, use `package_search` with `include_private=true` to ensure full visibility.\n\n"
+
+    "Available Tools:\n"
+    "1. **List CKAN Actions**\n"
+    "   - Function: `get_ckan_actions() -> List[str]`\n"
+    "   - Description: Lists all available CKAN action endpoints.\n\n"
+    "2. **Get Action Info**\n"
+    "   - Function: `get_action_info(action_key: str) -> dict`\n"
+    "   - Description: Returns usage details and parameters for a specific CKAN action.\n\n"
+    "3. **Execute CKAN Action**\n"
+    "   - Function: `run_action(action_name: str, parameters: Dict) -> dict`\n"
+    "   - Description: Executes a given CKAN action with specified parameters.\n"
 )
 
 agent = Agent(
     model=model,
     deps_type=Deps,
-    system_prompt="".join(front_prompt),
+    system_prompt="".join(front_agent_prompt),
     retries=3,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
-
-# --------------------- Vector & RAG Models ---------------------
-
-# from uuid import UUID
-
-rag_prompt = (
-    "Role:\n\n"
-    "You are an assistant doing literature research by the question you were ask and looking up a vector store to a CKAN software instance that must execute tool commands and assess their success or failure. Do not provide endless examples; instead focus on running tools and reasoning based on their outputs and execute steps in your chain of tought right away.\n"
-    "Key Guidelines:\n\n"
-    "- Lookup literature, by 'rag_search'. If it indicates that the Milvus client is not set up, switch to `package_search` with search_str.\n"
-    "- Start by using rag_search with exactly the original questions passing 'num_result' of hits we aim for as limit.\n\n"
-    "- Create LitResult objects by aggregating RagHits by the same source property. Count the number of valid LitResults. If the number of LitResult s does not match the number of results requested, you must run the rag_search again by rephasing questions, but stay as close as possible to the context of the original question, till the necessary number of results is reached. If you fail to reach this goal, name the reason and add it to the error field.\n\n"
-    "- Beside the results also return the phrases you used for the search in the search_str field as list of strings.\n\n"
-    "- Access the LitResult documents and formulate a comprehensive answer. Update the LitResult objects adding the title, authors and a summary why its relevant to the answer you formulated.\n\n"
-    "Your Toolset:\n\n"
-    "1. **Retrieve Document hits:**\n"
-    "- **Function:** `rag_search`\n"
-    "- **Purpose:** Performs a vector search on document chunks using a list of search strings. Results limit can be set by limit parameter\n"
-    "2. **Download Resource Contents:**\n"
-    "- **Function:** `get_resource_file_contents`\n"
-    "- **Purpose:** Retrieves file content from CKAN or external sources, with options for partial content retrieval using offset and max_length parameters.\n"
-    "- **Pagination:** To iter trough content you must increase the offset parameter by the amount of max_length of the previous call.\n"
-    "- **When to Use:** To fetch the contents of a file resource. If SSL verification is to be disabled (i.e., `ssl_verify=False`), notify the user and ask for confirmation before proceeding.\n\n"
-    "3. **Execute CKAN 'package_search' Action:**\n"
-    "   - **Function:** `run_action(action_name: 'package_search', parameters: {'q': search_str}) -> dict`\n"
-    "   - **Purpose:** Executes a specified CKAN action with provided parameters.\n"
-    "\n"
+ckan_agent = Agent(
+    model=model,
+    deps_type=Deps,
+    output_type=CKANResult,
+    system_prompt="".join(ckan_agent_prompt),
+    retries=10,
 )
+
 
 rag_agent = Agent(
     model=model,
@@ -459,34 +398,11 @@ class SliceModel(BaseModel):
     end: int
 
 
-class AnalyseResult(BaseModel):
-    answer: str = ""
-    doc_position: float
-    text_slices: Optional[list[SliceModel]] = None
-    error: Optional[List[str]] = None
-
-
-doc_analyse_prompt = (
-    "Role:\n\n"
-    "You are an assistant analysing scientific documents by the question you were ask.\n"
-    "Key Guidelines:\n\n"
-    "- Find the charcter indexes of start and end of the passage by using 'find_text_slice_offsets'. You have to use very close matching sub strings o the document text or it will fail.\n\n"
-    "- You must add all relevant passages to the list of 'text_slices' use 'find_text_slice_offsets' the get the absolute index values.\n\n"
-    "- If the text analysed is not reaching the end of the document. You must ask for additiona text input in your answer!\n"
-    "- Construct highlight URLs for a specific section in a document, use the find_text_slice_offsets tool to determine the start and end indices of the section, then retrieve the URL pattern using the get_ckan_url_patterns tool with endpoint='markdown_view.highlight'; if the pattern does not exist, fall back to providing the download URL of the resource along with the start and end indices.\n"
-    "Your Toolset:\n\n"
-    "1. **Index of Text Parts:**\n"
-    "- **Function:** `find_text_slice_offsets`\n"
-    "- **Purpose:** Finds start_str substring and end_str substring that follows start_str and will return the character index of that slice inside the text of the resource, counting from top of document. Use exact short strings 10-20 characters of start and end of the paragraph in scope that must be part of the original text.\n"
-    "- **When to Use:**\n"
-    "   - For pointing to text parts.\n"
-)
-
 doc_agent = Agent(
     model=model,
-    deps_type=Deps,  # Changed from TextSlice to Deps
+    deps_type=TextResource,
     output_type=AnalyseResult,
-    system_prompt="".join(doc_analyse_prompt),
+    system_prompt="".join(doc_prompt),
     retries=3,
     model_settings=rag_model_settings,
 )
@@ -499,67 +415,46 @@ def convert_to_model_messages(history: str) -> List:
     return None
 
 
-# --------------------- CKAN Routing and URL Helpers ---------------------
-
-VARIABLE_REGEX = re.compile(r"<(?:(?P<converter>[^:<>]+):)?(?P<variable>[^<>]+)>")
-
-
-def extract_variables(rule: str) -> List[Dict[str, Optional[str]]]:
-    return [match.groupdict() for match in VARIABLE_REGEX.finditer(rule)]
-
-
-def repl(match):
-    var = match.group("variable")
-    return f"{{{var}}}"
-
-
-class RouteModel(BaseModel):
-    endpoint: str
-    rule: str
-    methods: Optional[list[str]] = []
-    variables: Optional[list] = []
-    full_url_pattern: Optional[str]
-
-    @root_validator(pre=True)
-    def calculate_computed_field(cls, values):
-        values["variables"] = extract_variables(values["rule"])
-        values["full_url_pattern"] = VARIABLE_REGEX.sub(repl, values["rule"])
-        return values
-
-    def build_url(
-        self,
-        base_url: str = toolkit.config.get("ckan.site_url", ""),
-        fill: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        fill = fill or {}
-        substitution = {
-            var["variable"]: str(fill.get(var["variable"], f"<{var['variable']}>"))
-            for var in self.variables
-        }
-        pattern = self.full_url_pattern
-        if base_url.endswith("/") and pattern.startswith("/"):
-            base_url = base_url[:-1]
-        try:
-            url_path = pattern.format(**substitution)
-        except KeyError as e:
-            raise ValueError(f"Missing substitution for variable: {e.args[0]}") from e
-        return f"{base_url}{url_path}"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "endpoint": self.endpoint,
-            "rule": self.rule,
-            "methods": self.methods,
-            "variables": self.variables,
-            "full_url_pattern": self.full_url_pattern,
-        }
+#@agent.tool
+# @ckan_agent.tool_plain
+# def run_ckan_validated_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> dict:
+#     action_info=get_ckan_action(action=action_name)
+#     if not action_info:
+#         return {"success": False, "error": f"Action '{action_name}' not recognized."}
+#     expected_params = action_info.get("doc", {}).get("parameters", {})
+#     missing = [key for key, spec in expected_params.items() if spec.get("required") and key not in parameters]
+#     if missing:
+#         return {"success": False, "error": f"Missing required parameters: {missing}"}
+#     return run_action(ctx, action_name, parameters)
 
 
-routes: Dict[str, RouteModel] = {}
+# --------------------- Front Agent Delegation Tools ---------------------
 
+@agent.tool
+#@doc_agent.tool
+async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict) -> str:
+    try:
+        r = await asyncio.wait_for(
+            ckan_agent.run(
+                f"Run the CKAN action: '{command}' with the parameters: {parameters}. "
+                "If the action fails, suggest the correct action and explain it using 'get_action_info'.",
+                deps=ctx.deps,
+            ),
+            timeout=30
+        )
+    except asyncio.TimeoutError:
+        msg="Timeout on ckan_run attempt, retrying..."
+        log.error(msg)
+        return msg
+    except Exception as e:
+        msg=f"Unexpected error on ckan_run attempt: {str(e)}"
+        log.error(msg)
+        return msg
+    return r.data.json()
+    
 
-@agent.tool_plain
-def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
+#@ckan_agent.tool_plain
+def ckan_url_patterns(endpoint: str = "") -> RouteModel:
     """Get URL Flask Blueprint routes to views in CKAN if the argument endpoint is None or empty it wil return a list of endpoints. If set to an endpoint it will return the RouteModel containing arguements and the pattern to create the url.
 
     Args:
@@ -568,32 +463,31 @@ def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
     Returns:
         RouteModel: All details on the Route
     """
-    global routes
-    if not routes:
-        from ckanext.chat.views import global_ckan_app
+    routes=get_ckan_url_patterns(endpoint=endpoint)
+    return routes
 
-        for rule in global_ckan_app.url_map.iter_rules():
-            if not rule.rule.startswith("/_debug_toolbar"):
-                route = RouteModel(
-                    endpoint=rule.endpoint,
-                    rule=rule.rule,
-                    methods=sorted(list(rule.methods)),
-                )
-                routes[rule.endpoint] = route
-    if endpoint and endpoint in routes.keys():
-        return routes[endpoint].json()
-    else:
-        endpoints = [str(key) for key in routes.keys()]
-        return f"route endpoint not found. List of endpoints: {endpoints}"
+@ckan_agent.tool_plain
+def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None, base_url: Optional[str] = None) -> str:
+    """
+    Build a CKAN URL for the given endpoint and fill in URL variables.
 
+    Args:
+        endpoint (str): The CKAN endpoint to build a URL for.
+        fill (Optional[Dict[str, Any]]): A dictionary mapping URL variable names to their values.
+        base_url (Optional[str]): Override the CKAN base site URL.
 
-def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
-    if endpoint in routes.keys():
-        return routes[endpoint]
-    return None
+    Returns:
+        str: The fully constructed CKAN URL.
+
+    Raises:
+        ValueError: If the endpoint is not found or required variables are missing.
+    """
+    route_model = RouteModel(**route)
+    return route_model.build_url(base_url=base_url or toolkit.config.get("ckan.site_url", ""), fill=fill)
 
 
-@agent.tool_plain
+
+@ckan_agent.tool_plain
 def get_ckan_actions() -> List[str]:
     """Lists all avalable CKAN actions by action name
 
@@ -606,7 +500,7 @@ def get_ckan_actions() -> List[str]:
     return actions
 
 
-@agent.tool_plain
+@ckan_agent.tool_plain
 def get_action_info(action_key: str) -> dict:
     """Get the doc string of an action
 
@@ -622,8 +516,18 @@ def get_action_info(action_key: str) -> dict:
     return func_model.model_dump()
 
 
-@agent.tool
+# @ckan_agent.tool_plain
+# def available_actions() -> dict:
+#     """Get dictionary of all available actions
+
+#     Returns:
+#         dict: a dictionary with action name as keys containing the doc string and the arguments definitions needed to run the action
+#     """
+#     return CKAN_ACTIONS
+
+#@agent.tool
 @rag_agent.tool
+@ckan_agent.tool
 def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any:
     """Run CKAN actions basd on the action name and parameters as a dict.
 
@@ -664,47 +568,52 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 
+def extract_resource_uuid(input_string: str) -> str:
+    # Regulärer Ausdruck für UUID zwischen 'resource/' und '/download'
+    pattern = r'resource/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})/download'
+    match = re.search(pattern, input_string)
+    
+    if match:
+        return match.group(1)  # Gibt die gefundene UUID zurück
+    else:
+        return None
 
-@agent.tool
-@rag_agent.tool
+def extract_dataset_uuid(input_string: str) -> str:
+    pattern = r'dataset/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})/resource'
+    match = re.search(pattern, input_string)
+    
+    if match:
+        return match.group(1)  # Gibt die gefundene UUID zurück
+    else:
+        return None
+
+#@agent.tool_plain
+@rag_agent.tool_plain
 async def get_resource_file_contents(
-    ctx: RunContext[Deps],
-    resource_id: str,
     resource_url: str,
     ssl_verify=True,
-) -> str:
-    """Retrieves the content of a resource stored in filetore, allows setting max_length of output and offset to extract a slice of content
+) -> TextResource:
+    """
+    Retrieves the content of a resource stored in filetore, allows setting max_length of output and offset to extract a slice of content
 
     Args:
-        resource_id (str): The UUID of the CKAN resource
         resource_url (str): The download url of the CKAN resource
-    Returns:
-        str: the raw string content of the file retrieved
-    """
 
-    if ctx.deps.file:
-        # log.debug(ctx.deps.file.url)
-        # log.debug(resource_url)
-        if str(ctx.deps.file.url) == resource_url:
-            msg = "ressource already loaded"
-            log.debug(msg)
-            return msg
+    Returns:
+        TextResource: The raw string content of the file retrieved
+    """
     ckan_url = toolkit.config.get("ckan.site_url")
     try:
         resource = TextResource(url=resource_url)
-        """Asynchronously download and store text from the URL."""
-        ckan_url = toolkit.config.get("ckan.site_url")
-        if ckan_url in resource_url:
-            storage_path = toolkit.config.get(
-                "ckan.storage_path", "/var/lib/ckan/default"
-            )
+        resource_id = extract_resource_uuid(resource_url)
+        
+        if ckan_url in resource_url and resource_id:
+            storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
 
-            # Generate folder structure based on resource_id
             first_level_folder = resource_id[:3]
             second_level_folder = resource_id[3:6]
             file_name = resource_id[6:]
 
-            # Construct full file path
             file_path = os.path.join(
                 storage_path,
                 "resources",
@@ -723,127 +632,34 @@ async def get_resource_file_contents(
         else:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        resource_url, verify_ssl=ssl_verify
-                    ) as response:
+                    async with session.get(resource_url, ssl=ssl_verify) as response:
                         response.raise_for_status()
+                        content_type = response.headers.get("Content-Type", "")
+                        if not content_type.startswith("text/"):
+                            raise RuntimeError(f"Unsupported MIME type: {content_type}")
                         resource.text = await response.text()
             except Exception as e:
                 resource.text = ""
                 raise RuntimeError(f"Failed to download from {resource_url}: {e}")
 
-        ctx.deps.file = resource
-        msg = f"TextResource downloaded form {resource_url} with length: {resource.length}"
+        log.info(f"TextResource downloaded from {resource_url} with length: {resource.length}")
+        return resource
+
     except Exception as e:
-        msg = f"Failed to download and add TextResource: {e}"
-    log.debug(msg)
-    return msg
+        raise RuntimeError(f"Failed to download and add TextResource: {e}")
 
-
-def _fuzzy_search_sync(
-    pattern: str, text: str, threshold: float = 0.8
-) -> Tuple[Optional[str], int, int]:
-    max_err = max(1, int((1 - threshold) * len(pattern)))
-
-    def try_match(pat: str):
-        fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
-        return (
-            regex.search(
-                fuzzy_pat, text, flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
-            ),
-            fuzzy_pat,
-        )
-
-    try:
-        match, fuzzy_pat = try_match(pattern)
-    except regex.error as e:
-        print(f"Initial regex failed for pattern '{pattern}': {e}")
-        match = None
-
-    if not match:
-        escaped = regex.escape(pattern)
-        try:
-            match, fuzzy_pat = try_match(escaped)
-        except regex.error as e:
-            print(f"Escaped regex also failed for pattern '{escaped}': {e}")
-            return "", -1, -1
-
-    if not match:
-        return "", -1, -1
-
-    return match.group(1), match.start(1), match.end(1)
-
-
-def split_text_into_chunks(text, chunk_size, overlap):
-    step = chunk_size - overlap
-    chunks = []
-    for i in range(0, len(text), step):
-        chunk = text[i : i + chunk_size]
-        if len(chunk) > 0:
-            chunks.append((chunk, i))
-    return chunks
-
-
-async def fuzzy_search_early_cancel(
-    pattern: str, text: str, threshold: float = 0.8
-) -> Tuple[Optional[str], int, int]:
-    start_time = time.perf_counter()
-    chunk_size = 10000
-    overlap = 1000
-
-    if len(text) <= chunk_size:
-        result = _fuzzy_search_sync(pattern, text, threshold)
-        duration = time.perf_counter() - start_time
-        print(
-            f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds"
-        )
-        return result
-
-    step = chunk_size - overlap
-    tasks = []
-    chunks = []
-
-    for i in range(0, len(text), step):
-        chunk = text[i : i + chunk_size]
-        if chunk:
-            chunks.append((chunk, i))
-            task = asyncio.create_task(
-                asyncio.to_thread(_fuzzy_search_sync, pattern, chunk, threshold)
-            )
-            tasks.append(task)
-
-    for coro in asyncio.as_completed(tasks):
-        try:
-            match, start, end = await coro
-            if start >= 0:
-                if not hasattr(coro, "_coro"):
-                    continue
-                chunk_idx = tasks.index(coro._coro)  # Find index of completed task
-                abs_start = chunks[chunk_idx][1] + start
-                abs_end = chunks[chunk_idx][1] + end
-                duration = time.perf_counter() - start_time
-                log.debug(
-                    f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds"
-                )
-                # Cancel all other tasks
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                return match, abs_start, abs_end
-        except asyncio.CancelledError:
-            pass
-
-    duration = time.perf_counter() - start_time
-    log.debug(
-        f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
-    )
-    return "", -1, -1
+@doc_agent.tool
+async def get_text_slice(ctx: RunContext[TextResource], offset: int, length: int)->TextSlice:
+    return ctx.deps.extract_substring(offset=offset, length=length)
 
 
 @doc_agent.tool
-async def find_text_slice_offsets(
-    ctx: RunContext[Deps], start_str: str, end_str: str, threshold: float = 0.9
-) -> Union[Tuple[int, int], str]:
+async def precise_text_slice(
+    ctx: RunContext[TextResource],
+    start_str: str,
+    end_str: str,
+    threshold: float = 0.9
+) -> TextSlice:
     """
     Finds the start and end offsets of a text slice based on fuzzy matching of start and end strings.
 
@@ -858,14 +674,14 @@ async def find_text_slice_offsets(
             - The start and end offsets if both strings are found.
             - An error message if the start string is not found.
     """
-    if not ctx.deps.file or not ctx.deps.file.text:
+    if not ctx.deps.text:
         log.debug("No file loaded in Deps")
         return "No file loaded in Deps"
 
-    text = ctx.deps.file.text
+    text = ctx.deps.text
     offset = 0  # TextResource doesn't have an offset; use 0
-    slice_length = ctx.deps.file.length
-
+    slice_length = ctx.deps.length
+    
     # Try exact match first
     lower_text = text.lower()
     lower_start_str = start_str.lower()
@@ -878,9 +694,9 @@ async def find_text_slice_offsets(
         rel_end_idx = lower_tail.find(lower_end_str)
         if rel_end_idx != -1:
             abs_end_idx = start_end_idx + rel_end_idx + len(end_str)
-            log.debug(
-                f"Exact match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
-            )
+            # log.debug(
+            #     f"Exact match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
+            # )
             return (offset + start_idx, offset + abs_end_idx)
 
     # Fall back to fuzzy search
@@ -888,7 +704,7 @@ async def find_text_slice_offsets(
         start_str, text, threshold
     )
     if start_idx < 0:
-        log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
+        #log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
         return f"Start string not found: '{start_str}'"
 
     tail = text[start_end_idx:]
@@ -896,79 +712,19 @@ async def find_text_slice_offsets(
         end_str, tail, threshold
     )
     if rel_end_idx < 0:
-        log.debug(f"Tried to end pattern: '{end_str}' - returning default span")
+        #log.debug(f"Tried to end pattern: '{end_str}' - returning default span")
         return (offset + start_idx, offset + slice_length)
 
     abs_end_idx = start_end_idx + rel_end_idx_end
-    log.debug(
-        f"Fuzzy match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
-    )
-    return (offset + start_idx, offset + abs_end_idx)
+    # log.debug(
+    #     f"Fuzzy match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
+    # )
+    start,end=offset + start_idx, offset + abs_end_idx
+    position=float(end) / float(len(text))
+    text_slice=TextSlice(url=ctx.deps.url,text=text[start:end],doc_position=position)
+    log.debug(f"found: {text_slice}")
+    return text_slice
 
-
-class FuncSignature(BaseModel):
-    doc: Any
-
-
-# --------------------- Dynamic Models ---------------------
-
-
-class DynamicDataset(BaseModel):
-    id: str  # CKAN dataset id
-    view_url: Optional[str] = None
-
-    class Config:
-        extra = "allow"
-
-    @root_validator(pre=True)
-    def calculate_computed_field(cls, values):
-        route = find_route_by_endpoint("dataset.read")
-        if route:
-            values["view_url"] = str(route.build_url(fill={"id": values.get("id")}))
-        resources = values.get("resources")
-        if not isinstance(resources, list):
-            raise ValueError(
-                'Input should have a "resources" key with a list of resources.'
-            )
-        validated_resources = [DynamicResource(**resource) for resource in resources]
-        values["resources"] = validated_resources
-        return values
-
-    @classmethod
-    def from_ckan(cls, package: Package) -> "DynamicDataset":
-        data = package.as_dict() if hasattr(package, "as_dict") else package.__dict__
-        return cls(**data)
-
-
-class DynamicResource(BaseModel):
-    id: str  # CKAN resource id
-    package_id: Optional[str] = None
-
-    class Config:
-        extra = "allow"
-
-    @root_validator(pre=True)
-    def calculate_computed_field(cls, values):
-        route = find_route_by_endpoint("resource.read")
-        if route:
-            values["view_url"] = str(route.build_url(fill={"id": values.get("id")}))
-        return values
-
-    @computed_field
-    @property
-    def view_url(self) -> str:
-        route = find_route_by_endpoint("resource.read")
-        if route:
-            return route.build_url(fill={"id": self.id})
-        return ""
-
-    @classmethod
-    def from_ckan(cls, resource: Resource) -> "DynamicResource":
-        data = resource.as_dict() if hasattr(resource, "as_dict") else resource.__dict__
-        filtered_data = {
-            k: v for k, v in data.items() if v not in ([], {}, "", "", "null")
-        }
-        return cls(**filtered_data)
 
 
 def user_input_to_model_request(input_str: str) -> ModelRequest:
@@ -1067,6 +823,10 @@ async def rag_search(
                     f"Rag search for:{search_query} with limit: {limit} returned {num_results} results."
                 )
         return hits
+        
+
+
+
 
 
 @agent.tool
@@ -1081,49 +841,51 @@ async def literature_search(
                     deps=ctx.deps,
                     usage_limits=UsageLimits(request_limit=10),
                 ),
-                timeout=20,
-            )
+                timeout=30
+                )
             break
-        except asyncio.TimeoutError:
-            log.warning(f"Timeout on literature_search attempt {attempt}, retrying...")
-            attempt += 1
+        except (asyncio.TimeoutError):
+                log.warning(f"Timeout on literature_search attempt {attempt}, retrying...")
+                attempt+=1
         except Exception as e:
-            log.error(f"Unexpected error on literature_search attempt {attempt}: {e}")
-            attempt += 1
+            log.error(f"Unexpected error on literature_search attempt {attempt}: {str(e)}")
     else:
-        raise RuntimeError("All Azure retries timed out")
-    # log.debug(r.data)
+        raise RuntimeError("All literature_search retries timed out")
+    #log.debug(r.data)
     return r.data.json()
 
-
-@agent.tool
-async def literature_analyse(
-    ctx: RunContext[Deps], question: str, offset: int, max_length: int = 8000
-) -> list[str]:
-    doc = ctx.deps.file
-    if not doc:
-        return "no document loaded"
-    text_part = doc.extract_substring(offset=offset, length=max_length)
-    doc_position = float(offset + text_part.length) / ctx.deps.file.length
-    for attempt in range(3):
-        try:
-            r = await asyncio.wait_for(
-                doc_agent.run(
-                    f"Read through: {text_part.text} and find if there is an answer to: {question}. The text part ends at {doc_position} of the whole document.",
-                    deps=ctx.deps,  # Pass Deps instead of text_part
-                    usage_limits=UsageLimits(request_limit=50),
-                ),
-                timeout=20,
-            )
-            break
-        except asyncio.TimeoutError:
-            log.warning(f"Timeout on literature_analyse attempt {attempt}, retrying...")
-            attempt += 1
-        except Exception as e:
-            log.error(f"Unexpected error on literature_analyse attempt {attempt}: {e}")
-            attempt += 1
-    else:
-        raise RuntimeError("All Azure retries timed out")
+@agent.tool_plain
+async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) -> list[str]:
+    try:
+        doc=await get_resource_file_contents(resource_url=str(doc.url),ssl_verify=ssl_verify)
+    except Exception as e:
+        return f"Error: {str(e)}"
+    prompt = (
+        f"Analyze the provided TextResource to determine whether it contains an answer to the question below.\n\n"
+        f"**Question:** {question}\n\n"
+        "Use an intelligent document navigation strategy:\n"
+        "- Identify a Table of Contents or structural headings to guide your search.\n"
+        "- Explore the full document as needed — do not rely only on the beginning.\n"
+        "- Extract exact passages that support your answer, and cite them clearly.\n\n"
+        "Return your response with inline citations and a concise conclusion."
+    )   
+    try:
+        r = await asyncio.wait_for(
+            doc_agent.run(
+                prompt,
+                deps=doc,
+                usage_limits=UsageLimits(request_limit=50),
+            ),
+            timeout=30
+        )
+    except asyncio.TimeoutError:
+        msg="Timeout on literature_analyse attempt, retrying..."
+        log.error(msg)
+        return msg
+    except Exception as e:
+        msg=f"Unexpected error on literature_analyse attempt: {str(e)}"
+        log.error(msg)
+        return msg
     return r.data.json()
 
 
