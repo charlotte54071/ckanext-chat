@@ -1,17 +1,18 @@
-from loguru import logger
-log = logger.bind(module=__name__)
+import asyncio
+import re
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
+import ckan.plugins.toolkit as toolkit
+import regex
 import tiktoken
-import re, regex
 from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
-from pydantic import (BaseModel, ConfigDict, HttpUrl, ValidationError,
-                      computed_field, root_validator, validator)
-from typing import Any, Dict, Optional, List, Tuple
-import ckan.plugins.toolkit as toolkit
-import asyncio
-import time
+from loguru import logger
+from pydantic import BaseModel, ValidationError, computed_field, root_validator
+
+log = logger.bind(module=__name__)
 
 # --------------------- Dynamic Models Initialization ---------------------
 
@@ -35,6 +36,7 @@ def init_dynamic_models():
 
 
 # --------------------- Dynamic Models ---------------------
+
 
 class DynamicDataset(BaseModel):
     id: str  # CKAN dataset id
@@ -93,19 +95,24 @@ class DynamicResource(BaseModel):
         }
         return cls(**filtered_data)
 
+
 # --------------------- CKAN Actions and URL Helpers ---------------------
+
 
 class FuncSignature(BaseModel):
     doc: Any
 
+
 CKAN_ACTIONS: Dict[str, FuncSignature] = {}
+
 
 def get_ckan_action(action: str = "") -> FuncSignature:
     global CKAN_ACTIONS
     if not CKAN_ACTIONS:
         from ckan.logic import _actions
         from ckan.logic.action.get import help_show
-        actions=[key for key in _actions.keys() if not "_update" in key]
+
+        actions = [key for key in _actions.keys() if "_update" not in key]
         for item in actions:
             doc = help_show({}, {"name": item})
             CKAN_ACTIONS[item] = FuncSignature(doc=doc).model_dump()
@@ -113,7 +120,7 @@ def get_ckan_action(action: str = "") -> FuncSignature:
         return CKAN_ACTIONS[action]
     else:
         return CKAN_ACTIONS
-    
+
 
 # --------------------- CKAN Routing and URL Helpers ---------------------
 
@@ -127,6 +134,7 @@ def extract_variables(rule: str) -> List[Dict[str, Optional[str]]]:
 def repl(match):
     var = match.group("variable")
     return f"{{{var}}}"
+
 
 class RouteModel(BaseModel):
     endpoint: str
@@ -173,7 +181,6 @@ class RouteModel(BaseModel):
 CKAN_ROUTES: Dict[str, RouteModel] = {}
 
 
-
 def find_route_by_endpoint(endpoint: str) -> Optional[RouteModel]:
     if endpoint in CKAN_ROUTES.keys():
         return CKAN_ROUTES[endpoint]
@@ -190,8 +197,8 @@ def truncate_output_by_token(
         # Skip the specified number of tokens
         truncated_tokens = tokens[offset : offset + token_limit]
         output = encoding.decode(truncated_tokens)
-        #if last page of tokens, add a mark
-        if len(truncated_tokens)<token_limit:
+        # if last page of tokens, add a mark
+        if len(truncated_tokens) < token_limit:
             output += "\n\n**End of Output**"
 
     return output
@@ -289,7 +296,8 @@ def process_entity(data: Any) -> Any:
         return new_list
     else:
         return data
-    
+
+
 def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
     """Get URL Flask Blueprint routes to views in CKAN if the argument endpoint is None or empty it wil return a list of endpoints. If set to an endpoint it will return the RouteModel containing arguements and the pattern to create the url.
 
@@ -317,74 +325,90 @@ def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
         endpoints = [str(key) for key in CKAN_ROUTES.keys()]
         return f"route endpoint not found. List of endpoints: {endpoints}"
 
+
 # --- functions for pattern matching
 
+
 def try_match(pat: str, text: str, max_err: int):
-        if pat and text:
-            fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
-            if len(text)<=len(pat):
-                raise ValueError(f"length of 'text': {text} is smaller then pattern length: {pat}.")
-            return regex.search(
-                fuzzy_pat,
-                text,
-                flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
-            ), fuzzy_pat
-        else:
-            raise ValueError("The 'pat' and 'text' parameters must be a non-empty strings.")
-        
-def _fuzzy_search_sync(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
+    if pat and text:
+        fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
+        if len(text) <= len(pat):
+            raise ValueError(
+                f"length of 'text': {text} is smaller then pattern length: {pat}."
+            )
+        return (
+            regex.search(
+                fuzzy_pat, text, flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
+            ),
+            fuzzy_pat,
+        )
+    else:
+        raise ValueError("The 'pat' and 'text' parameters must be a non-empty strings.")
+
+
+def _fuzzy_search_sync(
+    pattern: str, text: str, threshold: float = 0.8
+) -> Tuple[Optional[str], int, int]:
     max_err = max(1, int((1 - threshold) * len(pattern)))
     try:
-        match, fuzzy_pat = try_match(pat=pattern,text=text,max_err=max_err)
+        match, fuzzy_pat = try_match(pat=pattern, text=text, max_err=max_err)
     except regex.error as e:
         print(f"Initial regex failed for pattern '{pattern}': {e}")
         match = None
-    
+
     if not match:
         escaped = regex.escape(pattern)
         try:
-            match, fuzzy_pat = try_match(pat=pattern,text=text,max_err=max_err)
+            match, fuzzy_pat = try_match(pat=pattern, text=text, max_err=max_err)
         except regex.error as e:
             print(f"Escaped regex also failed for pattern '{escaped}': {e}")
             return "", -1, -1
-    
+
     if not match:
         return "", -1, -1
-    
+
     return match.group(1), match.start(1), match.end(1)
+
 
 def split_text_into_chunks(text, chunk_size, overlap):
     step = chunk_size - overlap
     chunks = []
     for i in range(0, len(text), step):
-        chunk = text[i:i + chunk_size]
+        chunk = text[i : i + chunk_size]
         if len(chunk) > 0:
             chunks.append((chunk, i))
     return chunks
 
-async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
+
+async def fuzzy_search_early_cancel(
+    pattern: str, text: str, threshold: float = 0.8
+) -> Tuple[Optional[str], int, int]:
     # Überprüfe, ob der Pattern und der Text gültig sind
     if not pattern or not isinstance(pattern, str):
         raise ValueError("The 'pattern' parameter must be a non-empty string.")
-    
+
     if not text or not isinstance(text, str):
         raise ValueError("The 'text' parameter must be a non-empty string.")
-    
+
     start_time = time.perf_counter()
     chunk_size = 10000
     overlap = 1000
-    
+
     if text and len(text) <= chunk_size:
         result = _fuzzy_search_sync(pattern, text, threshold)
         duration = time.perf_counter() - start_time
-        log.debug(f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds")
+        log.debug(
+            f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds"
+        )
         return result
-    
-    step = chunk_size - overlap
+
     tasks = []
-    chunks=split_text_into_chunks(text,chunk_size,overlap)
+    chunks = split_text_into_chunks(text, chunk_size, overlap)
     # Erstelle die Tasks direkt als awaitables
-    tasks = [asyncio.to_thread(_fuzzy_search_sync, pattern, chunk[0], threshold) for chunk in chunks]
+    tasks = [
+        asyncio.to_thread(_fuzzy_search_sync, pattern, chunk[0], threshold)
+        for chunk in chunks
+    ]
     for completed_task in asyncio.as_completed(tasks):
         try:
             match, start, end = await completed_task
@@ -397,7 +421,9 @@ async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 
                 abs_start = chunks[chunk_idx][1] + start
                 abs_end = chunks[chunk_idx][1] + end
                 duration = time.perf_counter() - start_time
-                log.debug(f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds")
+                log.debug(
+                    f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds"
+                )
 
                 # Cancel all other tasks
                 for t in tasks:
@@ -408,8 +434,12 @@ async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            log.error(f"Error while processing fuzzy_search_early_cancel task:  {str(e)}")
+            log.error(
+                f"Error while processing fuzzy_search_early_cancel task:  {str(e)}"
+            )
 
     duration = time.perf_counter() - start_time
-    log.debug(f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds")
+    log.debug(
+        f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
+    )
     return "", -1, -1

@@ -1,30 +1,29 @@
-from loguru import logger
-log = logger.bind(module=__name__)
-
 import asyncio
-import aiofiles
-import aiohttp
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import aiofiles
+import aiohttp
 import ckan.model as CKANmodel
 import ckan.plugins.toolkit as toolkit
-#import nest_asyncio
+# import logfire
+import regex
+# import nest_asyncio
 import requests
 import tiktoken
-import regex
-
 from ckan.lib.lazyjson import LazyJSONObject
 from ckan.model.package import Package
 from ckan.model.resource import Resource
-from openai import AsyncAzureOpenAI
+from flask import Flask
+from loguru import logger
 from openai.resources.embeddings import Embeddings as OAI_Embeddings
-from pydantic import (BaseModel, ConfigDict, HttpUrl, ValidationError,
-                      computed_field, root_validator, validator)
+from pydantic import (BaseModel, HttpUrl, ValidationError, computed_field,
+                      root_validator)
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
                                     ModelHTTPError, ModelRetry,
@@ -33,28 +32,23 @@ from pydantic_ai.exceptions import (AgentRunError, FallbackExceptionGroup,
 from pydantic_ai.messages import (ModelMessagesTypeAdapter, ModelRequest,
                                   ModelResponse, TextPart, UserPromptPart)
 from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
-#from pydantic_ai.providers.openai import OpenAIProvider
+# from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 
+log = logger.bind(module=__name__)
+
 # # Allow nested event loops.
 # nest_asyncio.apply()
 
-import logfire
 
-os.environ['OTEL_EXPORTER_OTLP_ENDPOINT'] = 'http://docker-dev.iwm.fraunhofer.de:4318'  
-# logfire.configure(send_to_logfire=False)  
+os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://docker-dev.iwm.fraunhofer.de:4318"
+# logfire.configure(send_to_logfire=False)
 # logfire.instrument_pydantic_ai()
 # logfire.instrument_httpx(capture_all=True)
 # --------------------- Helper Functions ---------------------
 
-
-import asyncio
-import os
-from flask import Flask
-from pydantic_ai import Agent, RunContext
-import aiofiles
 
 app = Flask(__name__)
 
@@ -69,8 +63,8 @@ def truncate_output_by_token(
         # Skip the specified number of tokens
         truncated_tokens = tokens[offset : offset + token_limit]
         output = encoding.decode(truncated_tokens)
-        #if last page of tokens, add a mark
-        if len(truncated_tokens)<token_limit:
+        # if last page of tokens, add a mark
+        if len(truncated_tokens) < token_limit:
             output += "\n\n**End of Output**"
 
     return output
@@ -186,19 +180,19 @@ deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o-mini")
 rag_model_settings = OpenAIModelSettings(
     model_name=deployment,
     max_tokens=16384,
-    #openai_reasoning_effort= "low"
+    # openai_reasoning_effort= "low"
 )
 model = OpenAIModel(
     "gpt-4o",
     provider=AzureProvider(
         azure_endpoint=toolkit.config.get(
-        "ckanext.chat.completion_url", "https://your.chat.api"
-    ),
+            "ckanext.chat.completion_url", "https://your.chat.api"
+        ),
         api_version="2024-06-01",
         api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
     ),
 )
-#model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
+# model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
 # #Ollama setup
 # model = OpenAIModel(
@@ -211,7 +205,9 @@ model = OpenAIModel(
 
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
-embedding_model = toolkit.config.get("ckanext.chat.embedding_model", 'text-embedding-3-small')
+embedding_model = toolkit.config.get(
+    "ckanext.chat.embedding_model", "text-embedding-3-small"
+)
 embedding_api = toolkit.config.get("ckanext.chat.embedding_api", "")
 
 vector_dim = None
@@ -245,34 +241,36 @@ class TextSlice:
     text: str
     offset: int
     length: int
-    
+
+
 @dataclass
 class TextResource:
     url: HttpUrl = None
     _text: Optional[str] = field(init=False, default=None)
-    
+
     @property
     def text(self) -> Optional[str]:
         return self._text
-    
+
     @text.setter
     def text(self, value: Optional[str]):
         self._text = value
         self.length = len(value) if value is not None else 0
 
     length: int = field(init=False, default=0)
-    
+
     def extract_substring(self, offset: int, length: int) -> TextSlice:
         if self.text is None:
             raise ValueError("Text not loaded")
-        text_slice = self.text[offset:offset + length]
+        text_slice = self.text[offset : offset + length]
         return TextSlice(text=text_slice, offset=offset, length=len(text_slice))
-    
+
     def __getstate__(self):
         # Exclude _text from serialization
         state = self.__dict__.copy()
-        state['_text'] = None  # Don't serialize large text
+        state["_text"] = None  # Don't serialize large text
         return state
+
 
 @dataclass
 class Deps:
@@ -285,6 +283,7 @@ class Deps:
     collection_name: str = collection_name
     vector_dim: int = vector_dim
     file: Optional[TextResource] = None
+
 
 # --------------------- Dynamic Models Initialization ---------------------
 
@@ -312,12 +311,12 @@ def init_dynamic_models():
 
 class VectorMeta(BaseModel):
     id: int
-    #chunk_id: Optional[int] = None
-    #chunks: Optional[HttpUrl] = None
+    # chunk_id: Optional[int] = None
+    # chunks: Optional[HttpUrl] = None
     dataset_id: Optional[str] = None
-    #dataset_url: Optional[HttpUrl] = None
-    #groups: Optional[list[str]] = None
-    #private: Optional[str] = None
+    # dataset_url: Optional[HttpUrl] = None
+    # groups: Optional[list[str]] = None
+    # private: Optional[str] = None
     resource_id: Optional[str] = None
     source: Optional[HttpUrl] = None
     view_url: Optional[list[HttpUrl]] = None
@@ -327,6 +326,7 @@ class RagHit(BaseModel):
     id: int
     distance: Optional[float] = None
     entity: VectorMeta
+
 
 class LitResult(BaseModel):
     title: str = ""
@@ -342,9 +342,10 @@ class LitSearchResult(BaseModel):
     results: Optional[list[LitResult]] = None
     error: Optional[List[str]] = None
 
+
 # --------------------- System Prompt & Agent ---------------------
 
-system_prompt = (
+front_prompt = (
     "Role:\n\n"
     "You are an assistant to a CKAN software instance that executes tool commands and assesses their success or failure. For other task your handing over tasks to the other agents like 'literature_search' or 'literature_analysis', you will have to think about how to facilitate them to use ur goals and instruct them with the correct questions.\n"
     "Dont output your thinking output, focus on presenting results!\n"
@@ -408,7 +409,7 @@ system_prompt = (
 agent = Agent(
     model=model,
     deps_type=Deps,
-    system_prompt="".join(system_prompt),
+    system_prompt="".join(front_prompt),
     retries=3,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
@@ -416,9 +417,7 @@ agent = Agent(
 
 # --------------------- Vector & RAG Models ---------------------
 
-from datetime import datetime
-from uuid import UUID
-
+# from uuid import UUID
 
 rag_prompt = (
     "Role:\n\n"
@@ -454,6 +453,7 @@ rag_agent = Agent(
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
+
 class SliceModel(BaseModel):
     start: int
     end: int
@@ -464,6 +464,7 @@ class AnalyseResult(BaseModel):
     doc_position: float
     text_slices: Optional[list[SliceModel]] = None
     error: Optional[List[str]] = None
+
 
 doc_analyse_prompt = (
     "Role:\n\n"
@@ -479,7 +480,7 @@ doc_analyse_prompt = (
     "- **Purpose:** Finds start_str substring and end_str substring that follows start_str and will return the character index of that slice inside the text of the resource, counting from top of document. Use exact short strings 10-20 characters of start and end of the paragraph in scope that must be part of the original text.\n"
     "- **When to Use:**\n"
     "   - For pointing to text parts.\n"
-    )
+)
 
 doc_agent = Agent(
     model=model,
@@ -489,6 +490,7 @@ doc_agent = Agent(
     retries=3,
     model_settings=rag_model_settings,
 )
+
 
 def convert_to_model_messages(history: str) -> List:
     if history:
@@ -599,7 +601,8 @@ def get_ckan_actions() -> List[str]:
         List[str]: List of names of CKAN actions
     """
     from ckan.logic import _actions
-    actions=[key for key in _actions.keys() if not "_update" in key]
+
+    actions = [key for key in _actions.keys() if "_update" not in key]
     return actions
 
 
@@ -680,10 +683,10 @@ async def get_resource_file_contents(
     """
 
     if ctx.deps.file:
-        #log.debug(ctx.deps.file.url)
-        #log.debug(resource_url)
-        if str(ctx.deps.file.url)==resource_url:
-            msg=f"ressource already loaded"
+        # log.debug(ctx.deps.file.url)
+        # log.debug(resource_url)
+        if str(ctx.deps.file.url) == resource_url:
+            msg = "ressource already loaded"
             log.debug(msg)
             return msg
     ckan_url = toolkit.config.get("ckan.site_url")
@@ -692,8 +695,10 @@ async def get_resource_file_contents(
         """Asynchronously download and store text from the URL."""
         ckan_url = toolkit.config.get("ckan.site_url")
         if ckan_url in resource_url:
-            storage_path = toolkit.config.get("ckan.storage_path", "/var/lib/ckan/default")
-            
+            storage_path = toolkit.config.get(
+                "ckan.storage_path", "/var/lib/ckan/default"
+            )
+
             # Generate folder structure based on resource_id
             first_level_folder = resource_id[:3]
             second_level_folder = resource_id[3:6]
@@ -718,37 +723,43 @@ async def get_resource_file_contents(
         else:
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(resource_url,verify_ssl=ssl_verify) as response:
+                    async with session.get(
+                        resource_url, verify_ssl=ssl_verify
+                    ) as response:
                         response.raise_for_status()
                         resource.text = await response.text()
             except Exception as e:
                 resource.text = ""
                 raise RuntimeError(f"Failed to download from {resource_url}: {e}")
-        
+
         ctx.deps.file = resource
-        msg=f"TextResource downloaded form {resource_url} with length: {resource.length}"
+        msg = f"TextResource downloaded form {resource_url} with length: {resource.length}"
     except Exception as e:
-        msg=f"Failed to download and add TextResource: {e}"
+        msg = f"Failed to download and add TextResource: {e}"
     log.debug(msg)
     return msg
 
-def _fuzzy_search_sync(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
+
+def _fuzzy_search_sync(
+    pattern: str, text: str, threshold: float = 0.8
+) -> Tuple[Optional[str], int, int]:
     max_err = max(1, int((1 - threshold) * len(pattern)))
-    
+
     def try_match(pat: str):
         fuzzy_pat = f"({pat})" + f"{{e<={max_err}}}"
-        return regex.search(
+        return (
+            regex.search(
+                fuzzy_pat, text, flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
+            ),
             fuzzy_pat,
-            text,
-            flags=regex.BESTMATCH | regex.IGNORECASE | regex.DOTALL
-        ), fuzzy_pat
-    
+        )
+
     try:
         match, fuzzy_pat = try_match(pattern)
     except regex.error as e:
         print(f"Initial regex failed for pattern '{pattern}': {e}")
         match = None
-    
+
     if not match:
         escaped = regex.escape(pattern)
         try:
@@ -756,53 +767,64 @@ def _fuzzy_search_sync(pattern: str, text: str, threshold: float = 0.8) -> Tuple
         except regex.error as e:
             print(f"Escaped regex also failed for pattern '{escaped}': {e}")
             return "", -1, -1
-    
+
     if not match:
         return "", -1, -1
-    
+
     return match.group(1), match.start(1), match.end(1)
+
 
 def split_text_into_chunks(text, chunk_size, overlap):
     step = chunk_size - overlap
     chunks = []
     for i in range(0, len(text), step):
-        chunk = text[i:i + chunk_size]
+        chunk = text[i : i + chunk_size]
         if len(chunk) > 0:
             chunks.append((chunk, i))
     return chunks
 
-import time
-async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 0.8) -> Tuple[Optional[str], int, int]:
+
+async def fuzzy_search_early_cancel(
+    pattern: str, text: str, threshold: float = 0.8
+) -> Tuple[Optional[str], int, int]:
     start_time = time.perf_counter()
     chunk_size = 10000
     overlap = 1000
-    
+
     if len(text) <= chunk_size:
         result = _fuzzy_search_sync(pattern, text, threshold)
         duration = time.perf_counter() - start_time
-        print(f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds")
+        print(
+            f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds"
+        )
         return result
-    
+
     step = chunk_size - overlap
     tasks = []
     chunks = []
-    
+
     for i in range(0, len(text), step):
-        chunk = text[i:i + chunk_size]
+        chunk = text[i : i + chunk_size]
         if chunk:
             chunks.append((chunk, i))
-            task = asyncio.create_task(asyncio.to_thread(_fuzzy_search_sync, pattern, chunk, threshold))
+            task = asyncio.create_task(
+                asyncio.to_thread(_fuzzy_search_sync, pattern, chunk, threshold)
+            )
             tasks.append(task)
-    
+
     for coro in asyncio.as_completed(tasks):
         try:
             match, start, end = await coro
             if start >= 0:
+                if not hasattr(coro, "_coro"):
+                    continue
                 chunk_idx = tasks.index(coro._coro)  # Find index of completed task
                 abs_start = chunks[chunk_idx][1] + start
                 abs_end = chunks[chunk_idx][1] + end
                 duration = time.perf_counter() - start_time
-                log.debug(f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds")
+                log.debug(
+                    f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds"
+                )
                 # Cancel all other tasks
                 for t in tasks:
                     if not t.done():
@@ -810,17 +832,17 @@ async def fuzzy_search_early_cancel(pattern: str, text: str, threshold: float = 
                 return match, abs_start, abs_end
         except asyncio.CancelledError:
             pass
-    
+
     duration = time.perf_counter() - start_time
-    log.debug(f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds")
+    log.debug(
+        f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
+    )
     return "", -1, -1
+
 
 @doc_agent.tool
 async def find_text_slice_offsets(
-    ctx: RunContext[Deps],
-    start_str: str,
-    end_str: str,
-    threshold: float = 0.9
+    ctx: RunContext[Deps], start_str: str, end_str: str, threshold: float = 0.9
 ) -> Union[Tuple[int, int], str]:
     """
     Finds the start and end offsets of a text slice based on fuzzy matching of start and end strings.
@@ -843,7 +865,7 @@ async def find_text_slice_offsets(
     text = ctx.deps.file.text
     offset = 0  # TextResource doesn't have an offset; use 0
     slice_length = ctx.deps.file.length
-    
+
     # Try exact match first
     lower_text = text.lower()
     lower_start_str = start_str.lower()
@@ -856,24 +878,33 @@ async def find_text_slice_offsets(
         rel_end_idx = lower_tail.find(lower_end_str)
         if rel_end_idx != -1:
             abs_end_idx = start_end_idx + rel_end_idx + len(end_str)
-            log.debug(f"Exact match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
+            log.debug(
+                f"Exact match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
+            )
             return (offset + start_idx, offset + abs_end_idx)
-    
+
     # Fall back to fuzzy search
-    start_match, start_idx, start_end_idx = await fuzzy_search_early_cancel(start_str, text, threshold)
+    start_match, start_idx, start_end_idx = await fuzzy_search_early_cancel(
+        start_str, text, threshold
+    )
     if start_idx < 0:
         log.debug(f"Tried to start pattern: '{start_str}' - but didn't find a match")
         return f"Start string not found: '{start_str}'"
 
     tail = text[start_end_idx:]
-    end_match, rel_end_idx, rel_end_idx_end = await fuzzy_search_early_cancel(end_str, tail, threshold)
+    end_match, rel_end_idx, rel_end_idx_end = await fuzzy_search_early_cancel(
+        end_str, tail, threshold
+    )
     if rel_end_idx < 0:
         log.debug(f"Tried to end pattern: '{end_str}' - returning default span")
         return (offset + start_idx, offset + slice_length)
 
     abs_end_idx = start_end_idx + rel_end_idx_end
-    log.debug(f"Fuzzy match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}")
+    log.debug(
+        f"Fuzzy match found for '{start_str}...{end_str}' at {start_idx}, end at {abs_end_idx}"
+    )
     return (offset + start_idx, offset + abs_end_idx)
+
 
 class FuncSignature(BaseModel):
     doc: Any
@@ -969,30 +1000,21 @@ def exception_to_model_response(exc: Exception) -> ModelResponse:
     )
 
 
-
 async def get_embedding(chunks: List[str], model: str, api_url, vector_dim: int):
-    if not isinstance(api_url,str):
+    if not isinstance(api_url, str):
         # must be OAI embeddings
-        emb_r = await api_url.create(
-            input=chunks,
-            model=model,
-            dimensions=vector_dim
-        )
+        emb_r = await api_url.create(input=chunks, model=model, dimensions=vector_dim)
         return [vec.embedding for vec in emb_r.data]
-    headers = {
-        'accept': 'application/json',
-        'Content-Type': 'application/json'
-    }
-    data = {
-        'chunks': chunks,
-        'model': model
-    }
-    response = requests.post(api_url, headers=headers, data=json.dumps(data),verify=False)
-    
+    headers = {"accept": "application/json", "Content-Type": "application/json"}
+    data = {"chunks": chunks, "model": model}
+    response = requests.post(
+        api_url, headers=headers, data=json.dumps(data), verify=False
+    )
+
     if response.status_code == 200:
-        return response.json()['embeddings']
+        return response.json()["embeddings"]
     else:
-        return {'error': response.status_code, 'message': response.text}
+        return {"error": response.status_code, "message": response.text}
 
 
 @rag_agent.tool
@@ -1012,19 +1034,24 @@ async def rag_search(
     if not ctx.deps.milvus_client or not ctx.deps.embeddings:
         return "The Milvus Client was not setup properly, no rag_search supported in the moment."
     else:
-        query_vectors= await get_embedding(search_query,model=ctx.deps.embedding_model,api_url=ctx.deps.embeddings, vector_dim=ctx.deps.vector_dim)
-        num_results=0
+        query_vectors = await get_embedding(
+            search_query,
+            model=ctx.deps.embedding_model,
+            api_url=ctx.deps.embeddings,
+            vector_dim=ctx.deps.vector_dim,
+        )
+        num_results = 0
         hits = []
-        filter_ids=[]
-        while num_results <limit:
+        filter_ids = []
+        while num_results < limit:
             log.debug(f"{search_query} filtered by: {filter_ids}")
             search_res = ctx.deps.milvus_client.search(
                 collection_name=ctx.deps.collection_name,
                 data=query_vectors,
                 search_params={"metric_type": "COSINE", "params": {"level": 1}},
                 limit=6,
-                filter_params = {"ids": filter_ids} if filter_ids else None,
-                filter="id not in {ids}"if filter_ids else None,
+                filter_params={"ids": filter_ids} if filter_ids else None,
+                filter="id not in {ids}" if filter_ids else None,
                 output_fields=list(VectorMeta.__fields__.keys()),
                 consistency_level="Bounded",
             )
@@ -1032,41 +1059,50 @@ async def rag_search(
                 for i in range(len(query_vectors)):
                     hit = [RagHit(**item) for item in search_res[i]]
                     hits += hit
-                    filter_ids+= list(set(hit.id for hit in hits))
-                    #log.debug(hits)
+                    filter_ids += list(set(hit.id for hit in hits))
+                    # log.debug(hits)
                 distinct_sources = list(set(hit.entity.source for hit in hits))
-                num_results=len(distinct_sources)
-                log.debug(f"Rag search for:{search_query} with limit: {limit} returned {num_results} results.")
+                num_results = len(distinct_sources)
+                log.debug(
+                    f"Rag search for:{search_query} with limit: {limit} returned {num_results} results."
+                )
         return hits
-        
 
 
 @agent.tool
-async def literature_search(ctx: RunContext[Deps], search_question: str, num_results: int=5) -> list[str]:
+async def literature_search(
+    ctx: RunContext[Deps], search_question: str, num_results: int = 5
+) -> list[str]:
     for attempt in range(3):
         try:
             r = await asyncio.wait_for(
                 rag_agent.run(
                     f"Search for documents using this question:{search_question}. You must return {num_results} results",
-                    deps=ctx.deps, usage_limits=UsageLimits(request_limit=10),
+                    deps=ctx.deps,
+                    usage_limits=UsageLimits(request_limit=10),
                 ),
-                timeout=20
-                )
+                timeout=20,
+            )
             break
-        except (asyncio.TimeoutError) as e:
-                logger.warning("Timeout on attempt %d, retrying...", attempt + 1)
+        except asyncio.TimeoutError:
+            log.warning(f"Timeout on literature_search attempt {attempt}, retrying...")
+            attempt += 1
         except Exception as e:
-            logger.error("Unexpected error on attempt %d: %s", attempt + 1, str(e))
+            log.error(f"Unexpected error on literature_search attempt {attempt}: {e}")
+            attempt += 1
     else:
         raise RuntimeError("All Azure retries timed out")
-    #log.debug(r.data)
+    # log.debug(r.data)
     return r.data.json()
 
+
 @agent.tool
-async def literature_analyse(ctx: RunContext[Deps], question: str, offset: int, max_length: int=4000) -> list[str]:
+async def literature_analyse(
+    ctx: RunContext[Deps], question: str, offset: int, max_length: int = 8000
+) -> list[str]:
     doc = ctx.deps.file
     if not doc:
-        return f"no document loaded"
+        return "no document loaded"
     text_part = doc.extract_substring(offset=offset, length=max_length)
     doc_position = float(offset + text_part.length) / ctx.deps.file.length
     for attempt in range(3):
@@ -1077,16 +1113,19 @@ async def literature_analyse(ctx: RunContext[Deps], question: str, offset: int, 
                     deps=ctx.deps,  # Pass Deps instead of text_part
                     usage_limits=UsageLimits(request_limit=50),
                 ),
-                timeout=20
+                timeout=20,
             )
             break
         except asyncio.TimeoutError:
-            logger.warning("Timeout on attempt %d, retrying...", attempt + 1)
+            log.warning(f"Timeout on literature_analyse attempt {attempt}, retrying...")
+            attempt += 1
         except Exception as e:
-            logger.error("Unexpected error on attempt %d: %s", attempt + 1, str(e))
+            log.error(f"Unexpected error on literature_analyse attempt {attempt}: {e}")
+            attempt += 1
     else:
         raise RuntimeError("All Azure retries timed out")
     return r.data.json()
+
 
 def get_user_token(user_id: str) -> Optional[str]:
     user = CKANmodel.User.get(user_reference=user_id)
