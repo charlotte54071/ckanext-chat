@@ -7,50 +7,71 @@ ckan.module("chat-module", function ($, _) {
   function renderMarkdown(content) {
     var cleanHtml = "";
     if (Array.isArray(content)) {
-      cleanHtml = content
-        .map(function (item) {
-          if (typeof item === "object" && item !== null) {
-            console.log("The item is of type object:", item);
-          }
-          var rawHtml = marked.parse(item);
-          return DOMPurify.sanitize(rawHtml, {
+        cleanHtml = content
+            .map(function (item) {
+                // Überprüfe, ob das Item ein Objekt ist
+                if (typeof item === "object" && item !== null) {
+                    console.log("The item is of type object:", item);
+                    // Hier nehmen wir an, dass das Objekt eine `text`-Eigenschaft hat
+                    item = item.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
+                }
+                // Stelle sicher, dass item ein String ist
+                if (typeof item !== "string") {
+                    console.error("Item is not a string:", item);
+                    return ""; // Rückgabe eines leeren Strings, wenn der Input kein String ist.
+                }
+
+                var rawHtml = marked.parse(item);
+                return DOMPurify.sanitize(rawHtml, {
+                    ALLOWED_TAGS: [
+                        "p",
+                        "pre",
+                        "code",
+                        "span",
+                        "div",
+                        "br",
+                        "strong",
+                        "em",
+                        "ul",
+                        "ol",
+                        "li",
+                        "a",
+                    ],
+                    ALLOWED_ATTR: ["class", "href"],
+                });
+            })
+            .join("");
+    } else if (content) {
+        // Hier behandeln wir den Fall, wenn `content` kein Array ist
+        if (typeof content === "object" && content !== null) {
+            console.log("The content is of type object:", content);
+            content = content.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
+        }
+
+        // Stelle sicher, dass content ein String ist
+        if (typeof content !== "string") {
+            console.error("Content is not a string:", content);
+            return ""; // Rückgabe eines leeren Strings, wenn der Input kein String ist.
+        }
+
+        var rawHtml = marked.parse(content);
+        cleanHtml = DOMPurify.sanitize(rawHtml, {
             ALLOWED_TAGS: [
-              "p",
-              "pre",
-              "code",
-              "span",
-              "div",
-              "br",
-              "strong",
-              "em",
-              "ul",
-              "ol",
-              "li",
-              "a",
+                "p",
+                "pre",
+                "code",
+                "span",
+                "div",
+                "br",
+                "strong",
+                "em",
+                "ul",
+                "ol",
+                "li",
+                "a",
             ],
             ALLOWED_ATTR: ["class", "href"],
-          });
-        })
-        .join("");
-    } else if (content) {
-      var rawHtml = marked.parse(content);
-      cleanHtml = DOMPurify.sanitize(rawHtml, {
-        ALLOWED_TAGS: [
-          "p",
-          "pre",
-          "code",
-          "span",
-          "div",
-          "br",
-          "strong",
-          "em",
-          "ul",
-          "ol",
-          "li",
-          "a",
-        ],
-        ALLOWED_ATTR: ["class", "href"],
-      });
+        });
     }
     return cleanHtml;
   }
@@ -527,7 +548,7 @@ ckan.module("chat-module", function ($, _) {
       }
     },
 
-    // Update the chat title in localStorage
+    // Function to update chat title in localStorage
     updateChatTitle: function (oldLabel, newLabel) {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       var chatIndex = chats.findIndex(function (chat) {
@@ -665,7 +686,7 @@ ckan.module("chat-module", function ($, _) {
       }
     },
 
-    // Start a new chat session
+    // Function to start a new chat session
     newChat: function () {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
       const newchatlabel = "Current Chat";

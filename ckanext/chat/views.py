@@ -90,6 +90,8 @@ def ask():
             # Now response is guaranteed to have new_messages() if no exception occurred.
             # Ensure new_messages() is awaited in the sync wrapper if it's async
             messages = response.new_messages()
+            # for msg in messages:
+            #    logger.debug(msg)
             # remove empty text responses parts
             [
                 [
@@ -114,11 +116,8 @@ async def async_agent_response(prompt: str, history: str, user_id: str) -> Any:
 
 async def _agent_worker(prompt: str, history: str, user_id: str) -> Any:
     from loguru import logger
-
-    from ckanext.chat.bot.agent import (Deps, agent, convert_to_model_messages,
-                                        dynamic_models_initialized,
-                                        init_dynamic_models)
-
+    from ckanext.chat.bot.agent import Deps, agent, convert_to_model_messages
+    from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
     logger = logger.bind(process="worker", user_id=user_id)
     logger.debug(f"Worker starting for {user_id}")
     if not dynamic_models_initialized:

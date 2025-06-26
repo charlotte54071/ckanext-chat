@@ -254,7 +254,7 @@ def process_entity(data: Any) -> Any:
         data = unpack_lazy_json(data)
         if "resources" in data:
             try:
-                log.debug("DynamicDataset")
+                #log.debug("DynamicDataset")
                 dataset_dict = DynamicDataset(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
@@ -268,7 +268,7 @@ def process_entity(data: Any) -> Any:
                 log.warning(f"Conversion to DynamicDataset failed: {ex}")
         elif "package_id" in data or "url" in data:
             try:
-                log.debug("DynamicResource")
+                #log.debug("DynamicResource")
                 resource_dict = DynamicResource(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
@@ -320,7 +320,7 @@ def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
                 )
                 CKAN_ROUTES[rule.endpoint] = route
     if endpoint and endpoint in CKAN_ROUTES.keys():
-        return CKAN_ROUTES[endpoint].json()
+        return CKAN_ROUTES[endpoint]
     else:
         endpoints = [str(key) for key in CKAN_ROUTES.keys()]
         return f"route endpoint not found. List of endpoints: {endpoints}"
@@ -397,9 +397,9 @@ async def fuzzy_search_early_cancel(
     if text and len(text) <= chunk_size:
         result = _fuzzy_search_sync(pattern, text, threshold)
         duration = time.perf_counter() - start_time
-        log.debug(
-            f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds"
-        )
+        # log.debug(
+        #     f"Tried to match: '{pattern}' - found: {result[0] if result[1] >= 0 else 'no match'} - took {duration:.4f} seconds"
+        # )
         return result
 
     tasks = []
@@ -415,15 +415,15 @@ async def fuzzy_search_early_cancel(
             if completed_task not in tasks:
                 continue
             if start >= 0:
-                log.debug(f"Completed task: {completed_task}")
+                #log.debug(f"Completed task: {completed_task}")
                 # Finde den Index des abgeschlossenen Tasks in der ursprünglichen Zuordnung
                 chunk_idx = tasks.index(completed_task)
                 abs_start = chunks[chunk_idx][1] + start
                 abs_end = chunks[chunk_idx][1] + end
                 duration = time.perf_counter() - start_time
-                log.debug(
-                    f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds"
-                )
+                # log.debug(
+                #     f"Tried to match: '{pattern}' - found: {match} at {abs_start}-{abs_end} - took {duration:.4f} seconds"
+                # )
 
                 # Cancel all other tasks
                 for t in tasks:
@@ -439,7 +439,7 @@ async def fuzzy_search_early_cancel(
             )
 
     duration = time.perf_counter() - start_time
-    log.debug(
-        f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
-    )
+    # log.debug(
+    #     f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
+    # )
     return "", -1, -1
