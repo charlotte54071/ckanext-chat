@@ -31,7 +31,7 @@ from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
-from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, find_route_by_endpoint, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature
+from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature
 
 
 log = logger.bind(module=__name__)
@@ -227,7 +227,7 @@ class CKANResult(BaseModel):
     status: Literal['success', 'fail', 'suggest']
     action_name: str = ""
     parameters: Optional[Dict[str,Any]] = {} 
-    doc: FuncSignature
+    doc: Optional[FuncSignature]
     result: str
 
 # --------------------- Updated RAG Agent Prompt ---------------------
@@ -291,78 +291,37 @@ front_agent_prompt = (
     "  - Present updates and changes, requesting user confirmation before proceeding.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
     "Guidelines:\n"
+    "- use 'get_ckan_actions' to find a dict with keys of action names and values the functions signature.\n"
     "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
-    #"- add the documentation of the function to your output"
-    "- if asked for url creation ask 'ckan_run'"
     "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
     "\n"
 )
 
-
 # --------------------- System Prompt & Agent ---------------------
-
-# ckan_agent_prompt = (
-#     "Role:\n\n"
-#     "You are an assistant to a CKAN software instance that executes tool commands, assesses their success or failure.\n"
-#     "Try to match an fitting action for the command given.\n"
-#     "If you Fail to run a an action suggest an action to run by returning the appropiate action and the result of 'get_action_info'."
-#     "Also make sugestions on actions to get details on the returned objects, like for datasets aka package the action package_show.\n"
-#     "Dont output your thinking output, focus on presenting results!\n"
-#     "\n"
-#     "Key Guidelines:\n\n"
-#     "- Execution and Verification:\n"
-#     "  - Present updates and changes, requesting user confirmation before proceeding.\n"
-#     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
-#     "\n"
-#     "- Data Search and Retrieval:\n"
-#     "  - Use `package_search` with `include_private=true` for comprehensive dataset searches.\n"
-#     "\n"
-#     "Your Toolset:\n\n"
-#     "1. **List CKAN Actions:**\n"
-#     "   - **Function:** `get_ckan_actions() -> List[str]`\n"
-#     "   - Retrieve available CKAN action names.\n"
-#     "\n"
-#     "2. **Get Function Information:**\n"
-#     "   - **Function:** `get_action_info(action_key: str) -> dict`\n"
-#     "   - Access detailed information on specified CKAN actions.\n"
-#     "\n"
-#     "3. **Execute CKAN Actions:**\n"
-#     "   - **Function:** `run_action(action_name: str, parameters: Dict) -> dict`\n"
-#     "   - Execute CKAN actions with specified parameters.\n"
-#     "\n"
-# )
 
 ckan_agent_prompt = (
     "Role:\n\n"
     "You are an assistant to a CKAN software instance. You execute CKAN actions, evaluate their success, "
     "and suggest appropriate alternatives when needed.\n\n"
+    # "Before returning the results, try to augment the entities in your answer with links created by 'build_ckan_url', "
+    # "available routs you can get with 'ckan_url_patterns' tool.\n\n"
 
     "Behavior:\n"
-    "- Attempt to run the specified CKAN action with the given parameters.\n"
+    "- Attempt to run the specified CKAN action with the given parameters straight away, do not look up the action.\n"
     "- If the action fails or is invalid:\n"
-    "  - Suggest a likely correct action.\n"
-    "  - Use `get_action_info` to explain what the suggested action does.\n"
+    "  - If the action fails because of missing parameters, run the actions again with the default parameters form the documentation.\n"
+    "  - return the results but mentions the corrections you made and what can be improved on next call."
+    "  - Use `get_ckan_actions` to explain what the suggested action does.\n"
     "- If your action returns datasets or other CKAN objects, suggest relevant follow-up actions, e.g., "
-    "`package_show` for dataset details.\n"
     "- **Do not output internal reasoning. Focus only on clean, result-oriented output.**\n\n"
 
     "Execution Guidelines:\n"
     "- Present updates and changes clearly.\n"
     "- Always request confirmation if SSL verification is disabled (e.g., `ssl_verify=False`).\n\n"
+    "- Use the structure given by the result objects o list them in your output, use properties mentioning links to enhance ur markdown output.<"
 
     "Data Search:\n"
     "- When searching for datasets, use `package_search` with `include_private=true` to ensure full visibility.\n\n"
-
-    "Available Tools:\n"
-    "1. **List CKAN Actions**\n"
-    "   - Function: `get_ckan_actions() -> List[str]`\n"
-    "   - Description: Lists all available CKAN action endpoints.\n\n"
-    "2. **Get Action Info**\n"
-    "   - Function: `get_action_info(action_key: str) -> dict`\n"
-    "   - Description: Returns usage details and parameters for a specific CKAN action.\n\n"
-    "3. **Execute CKAN Action**\n"
-    "   - Function: `run_action(action_name: str, parameters: Dict) -> dict`\n"
-    "   - Description: Executes a given CKAN action with specified parameters.\n"
 )
 
 agent = Agent(
@@ -415,24 +374,14 @@ def convert_to_model_messages(history: str) -> List:
     return None
 
 
-#@agent.tool
-# @ckan_agent.tool_plain
-# def run_ckan_validated_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> dict:
-#     action_info=get_ckan_action(action=action_name)
-#     if not action_info:
-#         return {"success": False, "error": f"Action '{action_name}' not recognized."}
-#     expected_params = action_info.get("doc", {}).get("parameters", {})
-#     missing = [key for key, spec in expected_params.items() if spec.get("required") and key not in parameters]
-#     if missing:
-#         return {"success": False, "error": f"Missing required parameters: {missing}"}
-#     return run_action(ctx, action_name, parameters)
-
 
 # --------------------- Front Agent Delegation Tools ---------------------
 
 @agent.tool
 #@doc_agent.tool
 async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict) -> str:
+    log.debug(f"ckan_run: {command}  parameters: {parameters}")
+    log.debug(get_ckan_action())
     try:
         r = await asyncio.wait_for(
             ckan_agent.run(
@@ -450,6 +399,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict) -> str
         msg=f"Unexpected error on ckan_run attempt: {str(e)}"
         log.error(msg)
         return msg
+    #log.debug(f"ckan_run return: {r.data.json()}")
     return r.data.json()
     
 
@@ -466,8 +416,8 @@ def ckan_url_patterns(endpoint: str = "") -> RouteModel:
     routes=get_ckan_url_patterns(endpoint=endpoint)
     return routes
 
-@ckan_agent.tool_plain
-def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None, base_url: Optional[str] = None) -> str:
+#@ckan_agent.tool_plain
+def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None) -> str:
     """
     Build a CKAN URL for the given endpoint and fill in URL variables.
 
@@ -482,48 +432,38 @@ def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None, bas
     Raises:
         ValueError: If the endpoint is not found or required variables are missing.
     """
-    route_model = RouteModel(**route)
-    return route_model.build_url(base_url=base_url or toolkit.config.get("ckan.site_url", ""), fill=fill)
+    base_url= toolkit.config.get("ckan.site_url", "")
+    return route.build_url(base_url=base_url or toolkit.config.get("ckan.site_url", ""), fill=fill)
 
 
-
+@agent.tool_plain
 @ckan_agent.tool_plain
-def get_ckan_actions() -> List[str]:
+def get_ckan_actions() -> Dict[str, FuncSignature]:
     """Lists all avalable CKAN actions by action name
 
     Returns:
         List[str]: List of names of CKAN actions
     """
-    from ckan.logic import _actions
-
-    actions = [key for key in _actions.keys() if "_update" not in key]
-    return actions
-
-
-@ckan_agent.tool_plain
-def get_action_info(action_key: str) -> dict:
-    """Get the doc string of an action
-
-    Args:
-        action_key (str): the str the acton is named after
-
-    Returns:
-        dict: a dictionary containing the doc string and the arguments definitions needed to run the action
-    """
-    from ckan.logic.action.get import help_show
-
-    func_model = FuncSignature(doc=help_show({}, {"name": action_key}))
-    return func_model.model_dump()
+    return get_ckan_action()
 
 
 # @ckan_agent.tool_plain
-# def available_actions() -> dict:
-#     """Get dictionary of all available actions
+# def get_action_info(action_key: str) -> dict:
+#     """Get the doc string of an action
+
+#     Args:
+#         action_key (str): the str the acton is named after
 
 #     Returns:
-#         dict: a dictionary with action name as keys containing the doc string and the arguments definitions needed to run the action
+#         dict: a dictionary containing the doc string and the arguments definitions needed to run the action
 #     """
-#     return CKAN_ACTIONS
+#     from ckan.logic.action.get import help_show
+
+#     func_model = FuncSignature(doc=help_show({}, {"name": action_key}))
+#     return func_model.model_dump()
+
+
+
 
 #@agent.tool
 @rag_agent.tool
@@ -551,21 +491,10 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
         response = toolkit.get_action(action_name)(context, parameters)
     except Exception as e:
         return {"error": str(e)}
-    if action_name == "package_search":
-        view_route = find_route_by_endpoint("dataset.read")
-        clean_response = response
-        clean_response["results"] = [
-            {
-                "id": result["id"],
-                "name": result["name"],
-                "view_url": str(view_route.build_url(fill={"id": result["id"]})),
-            }
-            for result in response["results"]
-        ]
-    else:
-        clean_response = unpack_lazy_json(response)
-        clean_response = process_entity(clean_response)
-    log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
+    clean_response = unpack_lazy_json(response)
+    clean_response = process_entity(clean_response)
+    log.debug(clean_response)
+    #log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 
 def extract_resource_uuid(input_string: str) -> str:
