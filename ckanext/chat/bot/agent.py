@@ -165,6 +165,8 @@ class TextResource:
         state = self.__dict__.copy()
         state["_text"] = None  # Don't serialize large text
         return state
+    
+    
 
 
 @dataclass
@@ -193,7 +195,7 @@ class VectorMeta(BaseModel):
     # private: Optional[str] = None
     resource_id: Optional[str] = None
     source: Optional[HttpUrl] = None
-    view_url: Optional[list[HttpUrl]] = None
+    #view_url: Optional[list[HttpUrl]] = None
 
 
 class RagHit(BaseModel):
@@ -235,7 +237,7 @@ rag_prompt = (
     "Role:\n\n"
     "You perform literature retrieval using a vector store and return scientific citations in markdown format.\n"
     "- Use rag_search with the original question.\n"
-    "- Aggregate results by `source` into LitResult objects.\n"
+    "- Aggregate results by `source` into LitResult objects. Use the source field in the vector meta data.\n"
     "- For each source, return a markdown citation in the format: [1](url)\n"
     "- Add a summary why the source is relevant.\n"
     "- Retry search if fewer than N distinct sources are returned.\n"
@@ -284,11 +286,12 @@ doc_prompt = (
 front_agent_prompt = (
     "You are a coordinator agent.\n"
     "- For RAG lookups, call `literature_search`.\n"
+    "- If the User asked a specific question use the 'literature_analyse' on each results of `literature_search` to find an answer."
     "- For every question about a certain document you must use `literature_analyse`. Provide a link to the document of type text that enables download of the raw text.\n"
     "- For CKAN actions, formulate a clear command to `ckan_run` adding all the relevant information you got.\n"
     "- Present results with inline markdown citations where appropriate.\n"
     "- Execution and Verification:\n"
-    "  - Present updates and changes, requesting user confirmation before proceeding.\n"
+    "  - Present updates and changes, requesting user confirmation before proceeding, when running actions that chnage the data.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
     "Guidelines:\n"
     "- use 'get_ckan_actions' to find a dict with keys of action names and values the functions signature.\n"
