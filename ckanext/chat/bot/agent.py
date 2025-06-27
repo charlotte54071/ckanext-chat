@@ -225,12 +225,12 @@ class AnalyseResult(BaseModel):
     error: Optional[List[str]] = None
 
 class CKANResult(BaseModel):
-    #answer: str
-    status: Literal['success', 'fail', 'suggest']
+    status: Literal['success', 'fail']
     action_name: str = ""
     parameters: Optional[Dict[str,Any]] = {} 
     doc: Optional[FuncSignature]
     result: str
+    comment: Optional[str]
 
 # --------------------- Updated RAG Agent Prompt ---------------------
 rag_prompt = (
@@ -286,7 +286,8 @@ doc_prompt = (
 front_agent_prompt = (
     "You are a coordinator agent.\n"
     "- For RAG lookups, call `literature_search`.\n"
-    "- If the User asked a specific question use the 'literature_analyse' on each results of `literature_search` to find an answer."
+    "- If the User asked a specific question use the 'literature_analyse' on each results of `literature_search` to find an answer. "
+    "Use the links returned by 'literature_analyse' to point to the passages most relavant in ur answer.\n"
     "- For every question about a certain document you must use `literature_analyse`. Provide a link to the document of type text that enables download of the raw text.\n"
     "- For CKAN actions, formulate a clear command to `ckan_run` adding all the relevant information you got.\n"
     "- Present results with inline markdown citations where appropriate.\n"
@@ -297,6 +298,10 @@ front_agent_prompt = (
     "- use 'get_ckan_actions' to find a dict with keys of action names and values the functions signature.\n"
     "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
     "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
+    "- When presenting information returned by tools, always include view URLs if they are available.\n"
+    "Avoid Assumptions:\n"
+    "- Do not assume format, content, or links without confirming their existence and relevance from the primary source.\n"
+    "- Refrain from generating any placeholder links or data that may misrepresent available resources.\n"
     "\n"
 )
 
@@ -304,8 +309,8 @@ front_agent_prompt = (
 
 ckan_agent_prompt = (
     "Role:\n\n"
-    "You are an assistant to a CKAN software instance. You execute CKAN actions, evaluate their success, "
-    "and suggest appropriate alternatives when needed.\n\n"
+    "You are an assistant to a CKAN software instance. You execute CKAN actions, evaluate their success, return the results of 'action_run' directly as 'results' "
+    "and suggest improvements or appropriate alternatives when as 'comment'.\n\n"
     # "Before returning the results, try to augment the entities in your answer with links created by 'build_ckan_url', "
     # "available routs you can get with 'ckan_url_patterns' tool.\n\n"
 
@@ -317,12 +322,6 @@ ckan_agent_prompt = (
     "  - Use `get_ckan_actions` to explain what the suggested action does.\n"
     "- If your action returns datasets or other CKAN objects, suggest relevant follow-up actions, e.g., "
     "- **Do not output internal reasoning. Focus only on clean, result-oriented output.**\n\n"
-
-    "Execution Guidelines:\n"
-    "- Present updates and changes clearly.\n"
-    "- Always request confirmation if SSL verification is disabled (e.g., `ssl_verify=False`).\n\n"
-    "- Use the structure given by the result objects o list them in your output, use properties mentioning links to enhance ur markdown output.<"
-
     "Data Search:\n"
     "- When searching for datasets, use `package_search` with `include_private=true` to ensure full visibility.\n\n"
 )
@@ -381,10 +380,23 @@ def convert_to_model_messages(history: str) -> List:
 # --------------------- Front Agent Delegation Tools ---------------------
 
 @agent.tool
-#@doc_agent.tool
-async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict) -> str:
-    log.debug(f"ckan_run: {command}  parameters: {parameters}")
-    log.debug(get_ckan_action())
+async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> str:
+    """
+    Executes a CKAN action with the provided parameters.
+
+    This function sends a command to the CKAN agent and waits for execution.
+    It logs the command and parameters and handles possible timeouts
+    and unexpected errors.
+    Args:
+        ctx (RunContext[Deps]): The context containing the dependencies for execution.
+        command (str): The name of the CKAN action to be executed.
+        parameters (dict): A dictionary of parameters required for the CKAN action.
+    Returns:
+        str: The result of the CKAN action as a JSON string, or an error message in case of failure.
+    Raises:
+        asyncio.TimeoutError: If the execution of the CKAN action exceeds the specified time (30 seconds).
+        Exception: For any other unexpected errors during the execution of the CKAN action.
+    """
     try:
         r = await asyncio.wait_for(
             ckan_agent.run(
