@@ -48,8 +48,9 @@ class DynamicDataset(BaseModel):
     @root_validator(pre=True)
     def calculate_computed_field(cls, values):
         route = find_route_by_endpoint("dataset.read")
-        if route:
-            values["view_url"] = str(route.build_url(fill={"id": values.get("id")}))
+        ckan_url = toolkit.config.get("ckan.site_url")
+        if route and ckan_url:
+            values["view_url"] = str(route.build_url(base_url=ckan_url,fill={"id": values.get("id")}))
         resources = values.get("resources")
         if not isinstance(resources, list):
             raise ValueError(
@@ -67,7 +68,7 @@ class DynamicDataset(BaseModel):
 
 class DynamicResource(BaseModel):
     id: str  # CKAN resource id
-    package_id: Optional[str] = None
+    view_url: Optional[str] = None
 
     class Config:
         extra = "allow"
@@ -75,17 +76,10 @@ class DynamicResource(BaseModel):
     @root_validator(pre=True)
     def calculate_computed_field(cls, values):
         route = find_route_by_endpoint("resource.read")
-        if route:
+        ckan_url = toolkit.config.get("ckan.site_url")
+        if route and ckan_url:
             values["view_url"] = str(route.build_url(fill={"id": values.get("id")}))
         return values
-
-    @computed_field
-    @property
-    def view_url(self) -> str:
-        route = find_route_by_endpoint("resource.read")
-        if route:
-            return route.build_url(fill={"id": self.id})
-        return ""
 
     @classmethod
     def from_ckan(cls, resource: Resource) -> "DynamicResource":
@@ -249,17 +243,20 @@ def unpack_lazy_json(obj):
     return obj
 
 
-def process_entity(data: Any) -> Any:
+def process_entity(data: Any, depth: int = 0, max_depth: int = 2) -> Any:
+    if depth > max_depth:
+        log.warning("Max recursion depth reached")
+        return data
+
     if isinstance(data, dict):
         data = unpack_lazy_json(data)
         if "resources" in data:
             try:
-                #log.debug("DynamicDataset")
                 dataset_dict = DynamicDataset(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
                 dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
-                return process_entity(dataset_dict)
+                return process_entity(dataset_dict, depth + 1, max_depth)
             except ValidationError as validation_error:
                 log.warning(
                     f"Validation error converting to DynamicDataset: {validation_error.json()}"
@@ -268,12 +265,11 @@ def process_entity(data: Any) -> Any:
                 log.warning(f"Conversion to DynamicDataset failed: {ex}")
         elif "package_id" in data or "url" in data:
             try:
-                #log.debug("DynamicResource")
                 resource_dict = DynamicResource(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
                 resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
-                return process_entity(resource_dict)
+                return process_entity(resource_dict, depth + 1, max_depth)
             except ValidationError as validation_error:
                 log.warning(
                     f"Validation error converting to DynamicResource: {validation_error.json()}"
@@ -283,20 +279,20 @@ def process_entity(data: Any) -> Any:
 
         new_dict = {}
         for key, value in data.items():
-            processed_value = process_entity(value)
+            processed_value = process_entity(value, depth + 1, max_depth)
             if processed_value not in ([], {}, "", None):
                 new_dict[key] = processed_value
         return new_dict
+
     elif isinstance(data, list):
         new_list = []
         for item in data:
-            processed_item = process_entity(item)
+            processed_item = process_entity(item, depth + 1, max_depth)
             if processed_item not in ([], {}, "", None):
                 new_list.append(processed_item)
         return new_list
     else:
         return data
-
 
 def get_ckan_url_patterns(endpoint: str = "") -> RouteModel:
     """Get URL Flask Blueprint routes to views in CKAN if the argument endpoint is None or empty it wil return a list of endpoints. If set to an endpoint it will return the RouteModel containing arguements and the pattern to create the url.
