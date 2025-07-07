@@ -285,7 +285,9 @@ doc_prompt = (
 # --------------------- Updated Front Agent ---------------------
 front_agent_prompt = (
     "You are a coordinator agent.\n"
-    "- For RAG lookups, call `literature_search`.\n"
+    "- For any question not directly related to CKAN entities like datasets or resources, call `literature_search`.\n"
+    "- Do NOT assume sources of information! Always try `literature_search` first, if no spefific source of information is given.\n"
+    "- When using `literature_search` dont pass the user promt directly, be aware that it does a vector search lookup doing similarity search and rephrase the question parsed accordingly.\n"
     "- If the User asked a specific question use the 'literature_analyse' on each results of `literature_search` to find an answer. "
     "Use the links returned by 'literature_analyse' to point to the passages most relavant in ur answer.\n"
     "- For every question about a certain document you must use `literature_analyse`. Provide a link to the document of type text that enables download of the raw text.\n"
