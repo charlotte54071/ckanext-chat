@@ -297,6 +297,8 @@ front_agent_prompt = (
     "  - Present updates and changes, requesting user confirmation before proceeding, when running actions that chnage the data.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
     "Guidelines:\n"
+    "- CKAN entities are organized like following: Datasets or Packages contain Resources that can be Files or Links, Every Dataset lives in exactly one Organisation, but can be associated with multiple Groups."
+    " Views are attached to Resources and render them dependent on the necessaties of the resource format and user needs.\n"
     "- use 'get_ckan_actions' to find a dict with keys of action names and values the functions signature.\n"
     "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
     "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
