@@ -269,7 +269,8 @@ doc_prompt = (
 
     "4. Write your answer:\n"
     "   - Synthesize the findings into a coherent response.\n"
-    "   - Include markdown-style citations to each passage: `[source](text_slice.url)`.\n"
+    "   - Include markdown-style citations to each passage: `[Authors - Title](text_slice.url)`.\n"
+    "   - Only use 'text_slice.url' or citations in the text that u have read to cite.\n"
     "   - Every major claim or quoted content must be cited.\n\n"
 
     "5. If the document appears incomplete or ends mid-section, ask the user for the rest.\n\n"
