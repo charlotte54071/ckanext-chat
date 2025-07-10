@@ -295,6 +295,7 @@ front_agent_prompt = (
     "  - Present updates and changes, requesting user confirmation before proceeding, when running actions that chnage the data.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
     "Guidelines:\n"
+    "- if `ckan_run` fails adopt your call by the suggestions made in the response, add default parameters as necessarry.\n"
     "- use 'get_ckan_actions' to find a dict with keys of action names and values the functions signature.\n"
     "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
     "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
@@ -352,12 +353,6 @@ rag_agent = Agent(
     model_settings=rag_model_settings,
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
-
-
-class SliceModel(BaseModel):
-    start: int
-    end: int
-
 
 doc_agent = Agent(
     model=model,
@@ -506,8 +501,9 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
         response = toolkit.get_action(action_name)(context, parameters)
     except Exception as e:
         return {"error": str(e)}
-    clean_response = unpack_lazy_json(response)
-    clean_response = process_entity(clean_response)
+    unpacked_response = unpack_lazy_json(response)
+    log.debug(type(unpacked_response))
+    clean_response = process_entity(unpacked_response)
     log.debug(clean_response)
     #log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
@@ -820,7 +816,7 @@ async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) 
                 deps=doc,
                 usage_limits=UsageLimits(request_limit=50),
             ),
-            timeout=30
+            timeout=60
         )
     except asyncio.TimeoutError:
         msg="Timeout on literature_analyse attempt, retrying..."

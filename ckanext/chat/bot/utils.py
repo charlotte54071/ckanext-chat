@@ -243,20 +243,24 @@ def unpack_lazy_json(obj):
     return obj
 
 
-def process_entity(data: Any, depth: int = 0, max_depth: int = 2) -> Any:
+def process_entity(data: Any, depth: int = 0, max_depth: int = 4) -> Any:
+    log.debug(f"{type(data)},{depth},{max_depth}")
     if depth > max_depth:
         log.warning("Max recursion depth reached")
-        return data
+        #data=truncate_by_depth(data,max_depth)
+        return None
 
     if isinstance(data, dict):
         data = unpack_lazy_json(data)
+        #log.debug(data.keys())
         if "resources" in data:
             try:
+                #log.debug("Dataset")
                 dataset_dict = DynamicDataset(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
                 dataset_dict = {k: v for k, v in dataset_dict.items() if bool(v)}
-                return process_entity(dataset_dict, depth + 1, max_depth)
+                return truncate_by_depth(dataset_dict,max_depth-depth)
             except ValidationError as validation_error:
                 log.warning(
                     f"Validation error converting to DynamicDataset: {validation_error.json()}"
@@ -265,24 +269,26 @@ def process_entity(data: Any, depth: int = 0, max_depth: int = 2) -> Any:
                 log.warning(f"Conversion to DynamicDataset failed: {ex}")
         elif "package_id" in data or "url" in data:
             try:
+                #log.debug("Resource")
                 resource_dict = DynamicResource(**data).model_dump(
                     exclude_unset=True, exclude_defaults=False, exclude_none=True
                 )
                 resource_dict = {k: v for k, v in resource_dict.items() if bool(v)}
-                return process_entity(resource_dict, depth + 1, max_depth)
+                return  truncate_by_depth(resource_dict,max_depth-depth)
             except ValidationError as validation_error:
                 log.warning(
                     f"Validation error converting to DynamicResource: {validation_error.json()}"
                 )
             except Exception as ex:
                 log.warning(f"Conversion to DynamicResource failed: {ex}")
-
-        new_dict = {}
-        for key, value in data.items():
-            processed_value = process_entity(value, depth + 1, max_depth)
-            if processed_value not in ([], {}, "", None):
-                new_dict[key] = processed_value
-        return new_dict
+        else:
+            #log.debug("Dictionary")
+            new_dict = {}
+            for key, value in data.items():
+                processed_value = process_entity(value, depth + 1, max_depth)
+                if processed_value not in ([], {}, "", None):
+                    new_dict[key] = processed_value
+            return new_dict
 
     elif isinstance(data, list):
         new_list = []
