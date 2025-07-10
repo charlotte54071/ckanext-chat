@@ -34,6 +34,7 @@ class ChatPlugin(plugins.SingletonPlugin, DefaultTranslation):
         declaration.declare(group.api_token, "your-api-token")
         declaration.declare(group.embedding_model, "text-embedding-3-small")
         declaration.declare(group.embedding_api, "")
+        declaration.declare(group.milvus_url, "")
         declaration.declare(group.collection_name, "")
 
     # IBlueprint
