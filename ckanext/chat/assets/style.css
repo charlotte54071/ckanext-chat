@@ -156,3 +156,7 @@ pre {
 .copy-button:hover {
   opacity: 1;
 }
+
+.toogle-button:after {
+  content: ''; /* Verhindert, dass ein Doppelpunkt oder andere Inhalte hinzugefügt werden */
+}

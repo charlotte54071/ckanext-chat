@@ -160,6 +160,11 @@ ckan.module("chat-module", function ($, _) {
       this.el.find("#userInput").on("keydown", function (e) {
         self.handleKeyDown(e);
       });
+      $("#researchToggle").on("click", function() {
+        const checkbox = $(this).find('input[type="checkbox"]');
+        checkbox.prop('checked', !checkbox.prop('checked')); // Toggle den Zustand der Checkbox
+        $(this).toggleClass('active', checkbox.prop('checked')); // Aktiviere den aktiven Stil, wenn die Checkbox wahr ist
+      });
       // Since the sidebar is rendered outside the module container, bind using a global selector
       $("#chatList").on("click", "li", function () {
         var index = $(this).index();
@@ -522,29 +527,39 @@ ckan.module("chat-module", function ($, _) {
         buttonText.addClass("d-none");
         icon.addClass("d-none");
 
-        $.post("chat/ask", {
-          text: "Provide only a 3-word title for this question: " + text,
-        })
+        if (!chatHistory.length) {
+          $.post("chat/ask", {
+              text: "Provide only a 3-word title for this question: " + text,
+          })
           .done(function (data) {
-            var label = self.getLastEntryText(data.response);
-            if (!chatHistory.length) {
+              var label = self.getLastEntryText(data.response);
               self.updateChatTitle(self.currentChatLabel, label);
               self.currentChatLabel = label;
-            }
-            self.sendBotMessage(text, self.currentChatLabel, function () {
+
+              // Sende die Bot-Nachricht nach dem Titel
+              self.sendBotMessage(text, self.currentChatLabel, function () {
+                  spinner.addClass("d-none");
+                  buttonText.removeClass("d-none");
+                  icon.removeClass("d-none");
+                  sendButton.prop("disabled", false);
+              });
+          })
+          .fail(function () {
+              alert("An error occurred while processing your request.");
               spinner.addClass("d-none");
               buttonText.removeClass("d-none");
               icon.removeClass("d-none");
               sendButton.prop("disabled", false);
-            });
-          })
-          .fail(function () {
-            alert("An error occurred while processing your request.");
-            spinner.addClass("d-none");
-            buttonText.removeClass("d-none");
-            icon.removeClass("d-none");
-            sendButton.prop("disabled", false);
           });
+        } else {
+            // Wenn Chat-Historie vorhanden ist, sende die Bot-Nachricht direkt
+            self.sendBotMessage(text, self.currentChatLabel, function () {
+                spinner.addClass("d-none");
+                buttonText.removeClass("d-none");
+                icon.removeClass("d-none");
+                sendButton.prop("disabled", false);
+            });
+        }
       }
     },
 
@@ -564,10 +579,12 @@ ckan.module("chat-module", function ($, _) {
     // Send a request to the bot and append its reply
     sendBotMessage: function (text, label, callback) {
       var history = this.getChatHistory(label);
+      var research_check = $("#researchToggle").find('input[type="checkbox"]').prop("checked");
+      console.log(research_check)
       var self = this;
       $.post(
         "chat/ask",
-        { text: text, history: JSON.stringify(history) },
+        { text: text, history: JSON.stringify(history), research: research_check },
         function (data) {
           const chatindex = self.saveChat(data.response, label);
           self.loadChat(chatindex);

@@ -72,6 +72,7 @@ class ChatView(MethodView):
         )
 
 def ask():
+    logger.debug(request.form)
     user_input = request.form.get("text")
     history = request.form.get("history", "")
     max_retries = 3

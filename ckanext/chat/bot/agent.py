@@ -507,9 +507,8 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     except Exception as e:
         return {"error": str(e)}
     unpacked_response = unpack_lazy_json(response)
-    log.debug(type(unpacked_response))
     clean_response = process_entity(unpacked_response)
-    log.debug(clean_response)
+    #log.debug(clean_response)
     #log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 

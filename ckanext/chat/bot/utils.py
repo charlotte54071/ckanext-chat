@@ -244,7 +244,7 @@ def unpack_lazy_json(obj):
 
 
 def process_entity(data: Any, depth: int = 0, max_depth: int = 4) -> Any:
-    log.debug(f"{type(data)},{depth},{max_depth}")
+    #log.debug(f"{type(data)},{depth},{max_depth}")
     if depth > max_depth:
         log.warning("Max recursion depth reached")
         #data=truncate_by_depth(data,max_depth)
