@@ -7,71 +7,71 @@ ckan.module("chat-module", function ($, _) {
   function renderMarkdown(content) {
     var cleanHtml = "";
     if (Array.isArray(content)) {
-        cleanHtml = content
-            .map(function (item) {
-                // Überprüfe, ob das Item ein Objekt ist
-                if (typeof item === "object" && item !== null) {
-                    console.log("The item is of type object:", item);
-                    // Hier nehmen wir an, dass das Objekt eine `text`-Eigenschaft hat
-                    item = item.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
-                }
-                // Stelle sicher, dass item ein String ist
-                if (typeof item !== "string") {
-                    console.error("Item is not a string:", item);
-                    return ""; // Rückgabe eines leeren Strings, wenn der Input kein String ist.
-                }
-
-                var rawHtml = marked.parse(item);
-                return DOMPurify.sanitize(rawHtml, {
-                    ALLOWED_TAGS: [
-                        "p",
-                        "pre",
-                        "code",
-                        "span",
-                        "div",
-                        "br",
-                        "strong",
-                        "em",
-                        "ul",
-                        "ol",
-                        "li",
-                        "a",
-                    ],
-                    ALLOWED_ATTR: ["class", "href"],
-                });
-            })
-            .join("");
-    } else if (content) {
-        // Hier behandeln wir den Fall, wenn `content` kein Array ist
-        if (typeof content === "object" && content !== null) {
-            console.log("The content is of type object:", content);
-            content = content.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
-        }
-
-        // Stelle sicher, dass content ein String ist
-        if (typeof content !== "string") {
-            console.error("Content is not a string:", content);
+      cleanHtml = content
+        .map(function (item) {
+          // Überprüfe, ob das Item ein Objekt ist
+          if (typeof item === "object" && item !== null) {
+            console.log("The item is of type object:", item);
+            // Hier nehmen wir an, dass das Objekt eine `text`-Eigenschaft hat
+            item = item.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
+          }
+          // Stelle sicher, dass item ein String ist
+          if (typeof item !== "string") {
+            console.error("Item is not a string:", item);
             return ""; // Rückgabe eines leeren Strings, wenn der Input kein String ist.
-        }
+          }
 
-        var rawHtml = marked.parse(content);
-        cleanHtml = DOMPurify.sanitize(rawHtml, {
+          var rawHtml = marked.parse(item);
+          return DOMPurify.sanitize(rawHtml, {
             ALLOWED_TAGS: [
-                "p",
-                "pre",
-                "code",
-                "span",
-                "div",
-                "br",
-                "strong",
-                "em",
-                "ul",
-                "ol",
-                "li",
-                "a",
+              "p",
+              "pre",
+              "code",
+              "span",
+              "div",
+              "br",
+              "strong",
+              "em",
+              "ul",
+              "ol",
+              "li",
+              "a",
             ],
             ALLOWED_ATTR: ["class", "href"],
-        });
+          });
+        })
+        .join("");
+    } else if (content) {
+      // Hier behandeln wir den Fall, wenn `content` kein Array ist
+      if (typeof content === "object" && content !== null) {
+        console.log("The content is of type object:", content);
+        content = content.text || ""; // Fallback auf leeren String, falls `text` nicht existiert
+      }
+
+      // Stelle sicher, dass content ein String ist
+      if (typeof content !== "string") {
+        console.error("Content is not a string:", content);
+        return ""; // Rückgabe eines leeren Strings, wenn der Input kein String ist.
+      }
+
+      var rawHtml = marked.parse(content);
+      cleanHtml = DOMPurify.sanitize(rawHtml, {
+        ALLOWED_TAGS: [
+          "p",
+          "pre",
+          "code",
+          "span",
+          "div",
+          "br",
+          "strong",
+          "em",
+          "ul",
+          "ol",
+          "li",
+          "a",
+        ],
+        ALLOWED_ATTR: ["class", "href"],
+      });
     }
     return cleanHtml;
   }
@@ -160,10 +160,10 @@ ckan.module("chat-module", function ($, _) {
       this.el.find("#userInput").on("keydown", function (e) {
         self.handleKeyDown(e);
       });
-      $("#researchToggle").on("click", function() {
+      $("#researchToggle").on("click", function () {
         const checkbox = $(this).find('input[type="checkbox"]');
-        checkbox.prop('checked', !checkbox.prop('checked')); // Toggle den Zustand der Checkbox
-        $(this).toggleClass('active', checkbox.prop('checked')); // Aktiviere den aktiven Stil, wenn die Checkbox wahr ist
+        checkbox.prop("checked", !checkbox.prop("checked")); // Toggle den Zustand der Checkbox
+        $(this).toggleClass("active", checkbox.prop("checked")); // Aktiviere den aktiven Stil, wenn die Checkbox wahr ist
       });
       // Since the sidebar is rendered outside the module container, bind using a global selector
       $("#chatList").on("click", "li", function () {
@@ -529,36 +529,36 @@ ckan.module("chat-module", function ($, _) {
 
         if (!chatHistory.length) {
           $.post("chat/ask", {
-              text: "Provide only a 3-word title for this question: " + text,
+            text: "Provide only a 3-word title for this question: " + text,
           })
-          .done(function (data) {
+            .done(function (data) {
               var label = self.getLastEntryText(data.response);
               self.updateChatTitle(self.currentChatLabel, label);
               self.currentChatLabel = label;
 
               // Sende die Bot-Nachricht nach dem Titel
               self.sendBotMessage(text, self.currentChatLabel, function () {
-                  spinner.addClass("d-none");
-                  buttonText.removeClass("d-none");
-                  icon.removeClass("d-none");
-                  sendButton.prop("disabled", false);
+                spinner.addClass("d-none");
+                buttonText.removeClass("d-none");
+                icon.removeClass("d-none");
+                sendButton.prop("disabled", false);
               });
-          })
-          .fail(function () {
+            })
+            .fail(function () {
               alert("An error occurred while processing your request.");
               spinner.addClass("d-none");
               buttonText.removeClass("d-none");
               icon.removeClass("d-none");
               sendButton.prop("disabled", false);
-          });
-        } else {
-            // Wenn Chat-Historie vorhanden ist, sende die Bot-Nachricht direkt
-            self.sendBotMessage(text, self.currentChatLabel, function () {
-                spinner.addClass("d-none");
-                buttonText.removeClass("d-none");
-                icon.removeClass("d-none");
-                sendButton.prop("disabled", false);
             });
+        } else {
+          // Wenn Chat-Historie vorhanden ist, sende die Bot-Nachricht direkt
+          self.sendBotMessage(text, self.currentChatLabel, function () {
+            spinner.addClass("d-none");
+            buttonText.removeClass("d-none");
+            icon.removeClass("d-none");
+            sendButton.prop("disabled", false);
+          });
         }
       }
     },
@@ -579,18 +579,32 @@ ckan.module("chat-module", function ($, _) {
     // Send a request to the bot and append its reply
     sendBotMessage: function (text, label, callback) {
       var history = this.getChatHistory(label);
-      var research_check = $("#researchToggle").find('input[type="checkbox"]').prop("checked");
-      console.log(research_check)
+      var research_check = $("#researchToggle")
+        .find('input[type="checkbox"]')
+        .prop("checked");
       var self = this;
-      $.post(
-        "chat/ask",
-        { text: text, history: JSON.stringify(history), research: research_check },
-        function (data) {
+      $.ajax({
+        type: "POST",
+        url: "chat/ask",
+        data: {
+          text: text,
+          history: JSON.stringify(history),
+          research: research_check,
+        },
+        timeout: 200000, // Timeout auf 200 Sekunden setzen (200000 ms)
+        success: function (data) {
           const chatindex = self.saveChat(data.response, label);
           self.loadChat(chatindex);
           if (callback) callback();
         },
-      );
+        error: function (jqXHR, textStatus, errorThrown) {
+          if (textStatus === "timeout") {
+            alert("Die Anfrage hat zu lange gedauert.");
+          } else {
+            alert("Ein Fehler ist aufgetreten: " + textStatus);
+          }
+        },
+      });
     },
 
     // Save new messages to the chat history in localStorage
