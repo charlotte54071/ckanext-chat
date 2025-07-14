@@ -21,7 +21,7 @@ from ckanext.chat.bot.agent import (exception_to_model_response,
                                     user_input_to_model_request)
 from ckanext.chat.helpers import service_available
 
-mp.set_start_method("spawn", force=True)
+#mp.set_start_method("spawn", force=True)
 logger.remove()
 if bool(strtobool(os.environ.get("DEBUG", "false"))):
     log_level = "DEBUG"
@@ -112,9 +112,13 @@ def ask():
             return jsonify({"response": [user_promt, error_response]})
 
 
-async def async_agent_response(prompt: str, history: str, user_id: str, research: bool=False) -> Any:
-    return await _agent_worker(prompt, history, user_id, research)
-
+def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_agent_worker(prompt, history, user_id, research))
+    finally:
+        loop.close()
 
 async def _agent_worker(prompt: str, history: str, user_id: str, research: bool=False) -> Any:
     from loguru import logger
