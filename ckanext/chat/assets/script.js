@@ -288,6 +288,16 @@ ckan.module("chat-module", function ($, _) {
         self.addCopyButtonsToBotAnswers();
         self.addCopyButtonsToCodeBlocks();
         this.currentChatLabel = chat.title;
+        // Render math in the body
+        renderMathInElement(document.body, {
+          delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: true },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true }
+          ],
+          throwOnError: false
+      });
       }
     },
 

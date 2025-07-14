@@ -4,6 +4,7 @@ styles %} {{ super() }} {% asset 'chat/chat-css' %}
   rel="stylesheet"
   href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/default.min.css"
 />
+{% asset 'markdown_view/katex_css' %}
 {% endblock %} {% block subtitle %}{{ _("Chat") }}{% endblock %} {% block
 breadcrumb_content %}
 <li class="active">{{ h.nav_link(_("Chat"), named_route='chat.chat') }}</li>
@@ -115,6 +116,8 @@ breadcrumb_content %}
 <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 <script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
 {% asset 'chat/chat-js' %}
+{% asset 'markdown_view/katex' %}
+{% asset 'markdown_view/katex_autorender' %}
 <script>
   $(document).ready(function () {
     $('[data-bs-toggle="tooltip"]').tooltip();

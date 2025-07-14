@@ -11,3 +11,19 @@ chat-js:
   extra:
     preload:
       - base/main
+
+
+katex:
+  output: ckanext-chat/%(version)s_ckanext-chat/katex.js
+  contents:
+    - katex.min.js
+
+katex_autorender:
+  output: ckanext-chat/%(version)s_ckanext-chat/katex_autorender.js
+  contents:
+    - auto-render.min.js
+
+katex_css:
+  output: ckanext-chat/%(version)s_ckanext-chat/katex.css
+  contents:
+    - katex.min.css
