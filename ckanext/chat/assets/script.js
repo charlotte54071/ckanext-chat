@@ -317,31 +317,24 @@ ckan.module("chat-module", function ($, _) {
             </div>
         `);
       }
-      function createToolHtml(
-        markdown,
-        id,
-        tool_id,
-        tool_name,
-        timestamp,
-        succeeded = true,
-      ) {
-        const statusClass = succeeded ? "border-success" : "border-danger";
+      function createToolHtml(markdown, id, tool_id, tool_name, timestamp, succeeded = true) {
+        // const statusClass = succeeded ? "border-success" : "border-danger";
         return $(`
-          <div id="${id}" class="message bot-message">
-            <span class="col-2 chatavatar"><i class="fas fa-robot"></i></span>
-            <div class="col-auto card text ${statusClass}" style="cursor:pointer;">
-              <div class="card-body p-0">
-                <h5 class="card-title">Tool Call: ${tool_name} ${timestamp}</h5>
-                <div class="collapse mt-2" id="${tool_id}">
-                  <div class="card card-body">
-                    ${renderMarkdown(markdown)}
-                  </div>
-                </div>
-              </div>
+          <div class="tool-call card position-relative m-3" id="${id}" data-tool-id="${tool_id}" title="Tool Call: ${tool_name}">
+            <!-- Overlapping Icon -->
+            <div class="tool-icon position-absolute top-0 start-50 translate-middle bg-white p-2 rounded-circle shadow" role="button" style="z-index:10;">
+              <i class="fas fa-robot fa-2x text-${succeeded ? 'success' : 'danger'}"></i>
+            </div>
+            
+            <!-- Collapsible Content -->
+            <div class="collapse tool-content mt-3" id="${tool_id}">
+                <h3 class="card-title">Tool Call: ${tool_name}</h5>
+                <div class="card-text mb-1 small text-muted">${timestamp}</div>
+                ${renderMarkdown(markdown)}
             </div>
           </div>
         `);
-      }
+      }        
       function formatContent(content) {
         if (typeof content === "object" && content !== null) {
           if (Array.isArray(content)) {
@@ -386,11 +379,14 @@ ckan.module("chat-module", function ($, _) {
       }
       function updateChatbox() {
         const chatbox = $("#chatbox");
-        chatbox.empty(); // Leere die Chatbox, bevor neue Nachrichten hinzugefügt werden
-
+        chatbox.empty(); // Clear chatbox
+      
+        let toolStack = null;
+        let inToolGroup = false;
+      
         timeline.forEach((entry, index) => {
           const { timestamp, parts, tool_call_id, tool_name } = entry;
-          // Überprüfen, ob es sich um einen Tool-Call handelt
+      
           if (tool_call_id) {
             const combinedMarkdown = combineParts(entry.parts);
             const toolHtml = createToolHtml(
@@ -400,24 +396,44 @@ ckan.module("chat-module", function ($, _) {
               tool_name || "Unknown Tool",
               timestamp,
             );
+      
             toolHtml.on("click", function () {
               self.toggleDetails(`tool-${tool_call_id}`);
             });
-            chatbox.append(toolHtml);
+      
+            if (!inToolGroup) {
+              // Start a new tool stack
+              toolStack = $('<div id="tool-stack" class="d-flex flex-row align-items-start flex-wrap my-3 ms-5"></div>');
+              inToolGroup = true;
+            }
+      
+            toolStack.append(toolHtml);
           } else {
+            // Flush tool stack before rendering non-tool messages
+            if (inToolGroup && toolStack) {
+              chatbox.append(toolStack);
+              toolStack = null;
+              inToolGroup = false;
+            }
+      
+            // Render normal messages
             parts.forEach((part) => {
-              if (part.part_kind === "system-prompt") {
-                return; // Keine Nachricht rendern
-              }
-              const Msg =
-                part.part_kind === "user-prompt"
-                  ? createMessageHtml(true, part.content, `timeline-${index}`)
-                  : createMessageHtml(false, part.content, `timeline-${index}`);
+              if (part.part_kind === "system-prompt") return;
+      
+              const Msg = part.part_kind === "user-prompt"
+                ? createMessageHtml(true, part.content, `timeline-${index}`)
+                : createMessageHtml(false, part.content, `timeline-${index}`);
+      
               chatbox.append(Msg);
             });
           }
         });
-      }
+      
+        // Flush remaining tool stack if timeline ends with it
+        if (inToolGroup && toolStack) {
+          chatbox.append(toolStack);
+        }
+      }      
       const { timestamp, parts } = message;
       parts.forEach((part) => {
         const { tool_call_id } = part;

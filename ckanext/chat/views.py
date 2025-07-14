@@ -111,7 +111,6 @@ def ask():
             logger.error(error_response)
             return jsonify({"response": [user_promt, error_response]})
 
-
 def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -120,33 +119,39 @@ def async_agent_response(prompt: str, history: str, user_id: str, research: bool
     finally:
         loop.close()
 
-async def _agent_worker(prompt: str, history: str, user_id: str, research: bool=False) -> Any:
+async def _agent_worker(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     from loguru import logger
-    from ckanext.chat.bot.agent import Deps, agent, research_agent, convert_to_model_messages
+    from ckanext.chat.bot.agent import (
+        Deps, agent, research_agent, convert_to_model_messages
+    )
     from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
+
     logger = logger.bind(process="worker", user_id=user_id)
     logger.debug(f"Worker starting for {user_id}")
+
     if not dynamic_models_initialized:
         init_dynamic_models()
-    deps = deps = Deps(user_id=user_id)
+
+    deps = Deps(user_id=user_id)
     msg_history = convert_to_model_messages(history)
-    # Run the async agent
+
     if research:
-        r = await research_agent.run(
+        r = research_agent.run(
             user_prompt=prompt,
             message_history=msg_history,
             deps=deps,
         )
     else:
-        r = await agent.run(
+        r = agent.run(
             user_prompt=prompt,
             message_history=msg_history,
             deps=deps,
         )
+
     logger.debug(f"Worker done, result: {r}")
-    # Ensure all log messages are sent before process exits
     await logger.complete()
     return r
+
 
 
 blueprint.add_url_rule(
