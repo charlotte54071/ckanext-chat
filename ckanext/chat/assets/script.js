@@ -494,7 +494,10 @@ ckan.module("chat-module", function ($, _) {
           $(this).attr("data-highlighted", "true");
         }
       });
-      chatbox.scrollTop(chatbox[0].scrollHeight);
+      const lastElement = chatbox.children().last()[0];
+      if (lastElement) {
+        lastElement.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
       $('[data-bs-toggle="tooltip"]').tooltip();
     },
 
@@ -545,7 +548,7 @@ ckan.module("chat-module", function ($, _) {
 
         if (!chatHistory.length) {
           $.post("chat/ask", {
-            text: "Provide only a 3-word title for this question: " + text,
+            text: "Output only a 3-word title for this question: " + text,
           })
             .done(function (data) {
               var label = self.getLastEntryText(data.response);
