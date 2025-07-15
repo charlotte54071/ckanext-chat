@@ -1,105 +1,126 @@
-{% extends "page.html" %}
-{% import 'macros/form.html' as form %}
-
-{%- block styles %}
-{{ super() }}
-{% asset 'chat/chat-css' %}
-<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/default.min.css">
-{% endblock %}
-
-{% block subtitle %}{{ _("Chat") }}{% endblock %}
-
-{% block breadcrumb_content %}
+{% extends "page.html" %} {% import 'macros/form.html' as form %} {%- block
+styles %} {{ super() }} {% asset 'chat/chat-css' %}
+<link
+  rel="stylesheet"
+  href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/default.min.css"
+/>
+{% asset 'markdown_view/katex_css' %}
+{% endblock %} {% block subtitle %}{{ _("Chat") }}{% endblock %} {% block
+breadcrumb_content %}
 <li class="active">{{ h.nav_link(_("Chat"), named_route='chat.chat') }}</li>
-{% endblock %}
-
-{% block primary_content %}
+{% endblock %} {% block primary_content %}
 <section class="module" data-module="chat-module">
   <div class="module-content">
     {% block page_primary_action %}
     <div class="actions">
-      <a class="btn btn-danger btn-action" id="deleteChatButton">{% trans %}Delete Current Chat{% endtrans %}</a>
-      <a class="btn btn-success btn-action" id="newChatButton">{% trans %}Start New Chat{% endtrans %}</a>
+      <a class="btn btn-danger btn-action" id="deleteChatButton"
+        >{% trans %}Delete Current Chat{% endtrans %}</a
+      >
+      <a class="btn btn-success btn-action" id="newChatButton"
+        >{% trans %}Start New Chat{% endtrans %}</a
+      >
     </div>
-    {% endblock %}
-
-    {% block chat %}
+    {% endblock %} {% block chat %}
     <section id="main-content">
-      <header id="main-header">
-      </header>
+      <header id="main-header"></header>
       <div id="chatbox">
         <!-- Chat messages will be dynamically inserted here -->
       </div>
-      <div id="composer-background"
+      <div
+        id="composer-background"
         class="d-flex flex-column w-100 border border-light px-3 py-1 bg-light shadow-sm rounded-9"
-        style="view-transition-name:var(--vt-composer)">
-        <div class="d-flex flex-column" style="min-height:0">
-            <div class="d-flex align-items-start pe-1">
-                <div class="flex-grow-1">
-                  <textarea class="span6 w-100 border-0 bg-light " rows="3" id="userInput" placeholder="{% trans %}Ask anything...{% endtrans %}" required translate="no" data-virtualkeyboard="true" spellcheck="false" ></textarea>
-                </div>
+        style="view-transition-name: var(--vt-composer)"
+      >
+        <div class="d-flex flex-column" style="min-height: 0">
+          <div class="d-flex align-items-start pe-1">
+            <div class="flex-grow-1">
+              <textarea
+                class="span6 w-100 border-0 bg-light"
+                rows="3"
+                id="userInput"
+                placeholder="{% trans %}Ask anything...{% endtrans %}"
+                required
+                translate="no"
+                data-virtualkeyboard="true"
+                spellcheck="false"
+              ></textarea>
             </div>
+          </div>
         </div>
         <div class="mb-2 mt-1 d-flex justify-content-between">
-            <div class="d-flex gap-2">
-                <!-- Jinja2 block for upload file, search and reason toggle buttons -->
-                {% block action_buttons %}
-                <!-- <input type="file" id="fileInput" class="d-none">
+          <div class="d-flex gap-2">
+            <!-- Jinja2 block for upload file, search and reason toggle buttons -->
+            {% block action_buttons %}
+            <!-- <input type="file" id="fileInput" class="d-none">
                 <a class="btn btn-outline-secondary" aria-label="File" id="fileInput" onclick="$('#fileInput').click()">
                   <input type="file" id="fileInput" class="d-none">
                   <i class="fa fa-plus"></i>
                 </a> -->
-                <a class="btn btn-outline-info" 
-                  aria-label="Regenerate" 
-                  id="regenerateButton"
-                  data-bs-toggle="tooltip" 
-                  data-bs-placement="top" 
-                  title="{% trans %}This button removes the last bot response and re-sends your last prompt to regenerate the answer.{% endtrans %}">
-                  <i class="fa fa-arrows-rotate"></i>
-                </a>
-
-                {% endblock %}
-            </div>
-            <a class="btn btn-primary" aria-label="Send prompt" data-testid="send-button" id="sendButton" onclick="sendMessage(this)">
-              <i class="fa fa-paper-plane"></i>
-              <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-              <span class="button-text">{% trans %}Send{% endtrans %}</span>
+            <a
+              class="btn btn-outline-info"
+              aria-label="Regenerate"
+              id="regenerateButton"
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              title="{% trans %}This button removes the last bot response and re-sends your last prompt to regenerate the answer.{% endtrans %}"
+            >
+              <i class="fa fa-arrows-rotate"></i>
             </a>
+            <label
+              class="btn btn-outline-info toogle-button"
+              id="researchToggle"
+              aria-label="Research"
+              data-bs-toggle="tooltip"
+              data-bs-placement="top"
+              title="{% trans %}Toggle deeper thinking for more thorough research investigation.{% endtrans %}"
+            >
+              <input type="checkbox" style="display: none" />
+              <i class="fa fa-lightbulb"></i> Research
+            </label>
+
+            {% endblock %}
+          </div>
+          <a
+            class="btn btn-primary"
+            aria-label="Send prompt"
+            data-testid="send-button"
+            id="sendButton"
+            onclick="sendMessage(this)"
+          >
+            <i class="fa fa-paper-plane"></i>
+            <span
+              class="spinner-border spinner-border-sm d-none"
+              role="status"
+              aria-hidden="true"
+            ></span>
+            <span class="button-text">{% trans %}Send{% endtrans %}</span>
+          </a>
         </div>
-    </div>
+      </div>
     </section>
     {% endblock %}
   </div>
 
-  {% block page_pagination %}
-  {% endblock %}
+  {% block page_pagination %} {% endblock %}
 </section>
-{% endblock %}
-
-
-{% block secondary_content %}
-{% block form %}
+{% endblock %} {% block secondary_content %} {% block form %}
 <div class="sidebar bg-light">
   <h5 class="p-3">{% trans %}Previous Chats{% endtrans %}</h5>
   <ul id="chatList" class="list-group list-group-flush">
     <!-- Previous chat list items will be injected here -->
   </ul>
 </div>
-{% endblock %}
-{% endblock %}
-
-
-
-{% block scripts %}
-{{ super()}}
+{% endblock %} {% endblock %} {% block scripts %} {{ super()}}
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 <script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
 {% asset 'chat/chat-js' %}
+{% asset 'markdown_view/katex' %}
+{% asset 'markdown_view/katex_autorender' %}
 <script>
   $(document).ready(function () {
     $('[data-bs-toggle="tooltip"]').tooltip();
   });
 </script>
-{% endblock %} 
+{% endblock %}

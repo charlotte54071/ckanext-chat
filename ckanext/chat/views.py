@@ -21,7 +21,7 @@ from ckanext.chat.bot.agent import (exception_to_model_response,
                                     user_input_to_model_request)
 from ckanext.chat.helpers import service_available
 
-mp.set_start_method("spawn", force=True)
+#mp.set_start_method("spawn", force=True)
 logger.remove()
 if bool(strtobool(os.environ.get("DEBUG", "false"))):
     log_level = "DEBUG"
@@ -72,8 +72,10 @@ class ChatView(MethodView):
         )
 
 def ask():
+    logger.debug(request.form)
     user_input = request.form.get("text")
     history = request.form.get("history", "")
+    research= request.form.get("reserach", False)
     max_retries = 3
     attempt = 0
     tkuser = toolkit.current_user
@@ -84,7 +86,7 @@ def ask():
     while attempt < max_retries:
         try:
             response = asyncio.run(
-                async_agent_response(user_input, history, user_id=tkuser.id),
+                async_agent_response(user_input, history, user_id=tkuser.id, research=research),
                 debug=debug,
             )
             # Now response is guaranteed to have new_messages() if no exception occurred.
@@ -109,31 +111,47 @@ def ask():
             logger.error(error_response)
             return jsonify({"response": [user_promt, error_response]})
 
+def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_agent_worker(prompt, history, user_id, research))
+    finally:
+        loop.close()
 
-async def async_agent_response(prompt: str, history: str, user_id: str) -> Any:
-    return await _agent_worker(prompt, history, user_id)
-
-
-async def _agent_worker(prompt: str, history: str, user_id: str) -> Any:
+async def _agent_worker(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     from loguru import logger
-    from ckanext.chat.bot.agent import Deps, agent, convert_to_model_messages
+    from ckanext.chat.bot.agent import (
+        Deps, agent, research_agent, convert_to_model_messages
+    )
     from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
+
     logger = logger.bind(process="worker", user_id=user_id)
     logger.debug(f"Worker starting for {user_id}")
+
     if not dynamic_models_initialized:
         init_dynamic_models()
-    deps = deps = Deps(user_id=user_id)
+
+    deps = Deps(user_id=user_id)
     msg_history = convert_to_model_messages(history)
-    # Run the async agent
-    r = await agent.run(
-        user_prompt=prompt,
-        message_history=msg_history,
-        deps=deps,
-    )
+
+    if research:
+        r = research_agent.run(
+            user_prompt=prompt,
+            message_history=msg_history,
+            deps=deps,
+        )
+    else:
+        r = agent.run(
+            user_prompt=prompt,
+            message_history=msg_history,
+            deps=deps,
+        )
+
     logger.debug(f"Worker done, result: {r}")
-    # Ensure all log messages are sent before process exits
     await logger.complete()
     return r
+
 
 
 blueprint.add_url_rule(

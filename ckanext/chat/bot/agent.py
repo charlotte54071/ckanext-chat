@@ -67,6 +67,18 @@ model = OpenAIModel(
         api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
     ),
 )
+
+think_model = OpenAIModel(
+    "gpt-4.1-mini",
+    provider=AzureProvider(
+        azure_endpoint=toolkit.config.get(
+            "ckanext.chat.completion_url", "https://your.chat.api"
+        ),
+        api_version="2024-06-01",
+        api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
+    ),
+)
+
 # model = OpenAIModel(deployment, provider=OpenAIProvider(openai_client=azure_client))
 
 # #Ollama setup
@@ -110,6 +122,17 @@ if milvus_url:
 else:
     milvus_client = None
 
+@dataclass
+class Deps:
+    user_id: str
+    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
+    openai: OpenAIModel = field(default_factory=lambda: model)
+    embeddings: Union[OAI_Embeddings, str] = field(default=embedding_api)
+    embedding_model: str = field(default_factory=lambda: embedding_model)
+    max_context_length: int = 8192
+    collection_name: str = collection_name
+    vector_dim: int = vector_dim
+    #file: Optional[TextResource] = None
 
 @dataclass
 class TextSlice:
@@ -166,21 +189,6 @@ class TextResource:
         state["_text"] = None  # Don't serialize large text
         return state
     
-    
-
-
-@dataclass
-class Deps:
-    user_id: str
-    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
-    openai: OpenAIModel = field(default_factory=lambda: model)
-    embeddings: Union[OAI_Embeddings, str] = field(default=embedding_api)
-    embedding_model: str = field(default_factory=lambda: embedding_model)
-    max_context_length: int = 8192
-    collection_name: str = collection_name
-    vector_dim: int = vector_dim
-    #file: Optional[TextResource] = None
-
 
 # --------------------- Vector & RAG Models ---------------------
 
@@ -269,7 +277,8 @@ doc_prompt = (
 
     "4. Write your answer:\n"
     "   - Synthesize the findings into a coherent response.\n"
-    "   - Include markdown-style citations to each passage: `[source](text_slice.url)`.\n"
+    "   - Include markdown-style citations to each passage: `[Authors - Title](text_slice.url)`.\n"
+    "   - Only use 'text_slice.url' or citations in the text that u have read to cite.\n"
     "   - Every major claim or quoted content must be cited.\n\n"
 
     "5. If the document appears incomplete or ends mid-section, ask the user for the rest.\n\n"
@@ -289,7 +298,7 @@ front_agent_prompt = (
     "- Do NOT assume sources of information! Always try `literature_search` first, if no spefific source of information is given.\n"
     "- When using `literature_search` dont pass the user promt directly, be aware that it does a vector search lookup doing similarity search and rephrase the question parsed accordingly.\n"
     "- If the User asked a specific question use the 'literature_analyse' on each results of `literature_search` to find an answer. "
-    "Use the links returned by 'literature_analyse' to point to the passages most relavant in ur answer.\n"
+    "Use the links returned by 'literature_analyse' to point to the passages most relavant in ur answer. They usually end with /highlight/<start:int>/<end:int>.\n"
     "- For every question about a certain document you must use `literature_analyse`. Provide a link to the document of type text that enables download of the raw text.\n"
     "- For CKAN actions, formulate a clear command to `ckan_run` adding all the relevant information you got.\n"
     "- Present results with inline markdown citations where appropriate.\n"
@@ -304,9 +313,40 @@ front_agent_prompt = (
     "- Use `ckan_run` with command `package_search` and  parameters `{q:search_str, include_private: true}` for comprehensive dataset searches. If the user does not specify what he searches for use search_str="".\n"
     "- If u have no idea on what to do, ask a question on a suitable action to `ckan_run`"
     "- When presenting information returned by tools, always include view URLs if they are available.\n"
+    "- Output formulas as latex nline without code boxes, use $$ as delimiter.\n"
     "Avoid Assumptions:\n"
     "- Do not assume format, content, or links without confirming their existence and relevance from the primary source.\n"
     "- Refrain from generating any placeholder links or data that may misrepresent available resources.\n"
+    "\n"
+)
+
+# --------------------- Updated Research Agent ---------------------
+research_agent_prompt = (
+    "You are a coordinator agent, equipped to think through user questions and perform thorough literature analysis.\n"
+    "- Begin by thinking through the user's question: identify key concepts, potential data sources, and related sub‑questions or topics to explore.\n"
+    "- Call `literature_search` and `literature_nanalysis` repeatedly to investigate further into your findings, till you found a detailed and throughout answer to the user question."
+    "- For any question not directly related to CKAN entities like datasets or resources, call `literature_search` as your first step.\n"
+    "- Do NOT assume sources of information! Always try `literature_search` first, unless the user explicitly provides a specific source.\n"
+    "- When using `literature_search`, do not pass the user prompt verbatim. Instead, rephrase the query to optimize vector similarity search matching.\n"
+    "- If the user asked a specific question, apply `literature_analyse` to each result from `literature_search` to extract precise answers. Use the links returned by `literature_analyse` to point to the most relevant passages.\n"
+    "Use the links returned by 'literature_analyse' to point to the passages most relavant in ur answer. They usually end with /highlight/<start:int>/<end:int>.\n"
+    "- For every question about a given document, you must use `literature_analyse`. Provide a direct download link to the raw text format of the document.\n"
+    "- For CKAN actions, after reasoning about the user's intent, formulate a clear command to `ckan_run`, including all relevant parameters you have identified.\n"
+    "- Present your final results with inline markdown citations where appropriate, and suggest related questions or topics the user might explore next.\n"
+    "- Execution and Verification:\n"
+    "  - Before making any changes to data via CKAN, present your planned updates or actions and request user confirmation.\n"
+    "  - If SSL verification is disabled (`ssl_verify=False`), explicitly request confirmation before proceeding.\n"
+    "Guidelines:\n"
+    "- If a `ckan_run` call fails, incorporate the tool's error hints and suggestions, adding default parameters as needed to retry successfully.\n"
+    "- CKAN entities are organized as follows: Packages (datasets) contain Resources (files or links). Every Package belongs to exactly one Organization but may be in multiple Groups. Views attach to Resources based on format and user needs.\n"
+    "- Use `get_ckan_actions` to retrieve available CKAN action names and their function signatures.\n"
+    "- For broad dataset searches, use `ckan_run` with action `package_search` and parameters `{q: search_str, include_private: true}`. If the user does not specify a query, set `search_str` to an empty string.\n"
+    "- If you are unsure how to proceed, ask the user clarifying questions or query a suitable CKAN action with `ckan_run`.\n"
+    "- When presenting tool results, always include any available view URLs for direct access.\n"
+    "- Output formulas as latex nline without code boxes, use $$ as delimiter.\n"
+    "Avoid Assumptions:\n"
+    "- Do not assume formats, content, or links without confirming their existence and relevance via primary sources.\n"
+    "- Refrain from creating placeholder links or data that could mislead about available resources.\n"
     "\n"
 )
 
@@ -339,6 +379,13 @@ agent = Agent(
     # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
 )
 
+research_agent= Agent(
+    model=think_model,
+    deps_type=Deps,
+    system_prompt="".join(research_agent_prompt),
+    retries=3,
+    # model_settings=OpenAIModelSettings(openai_reasoning_effort= "low")
+)
 ckan_agent = Agent(
     model=model,
     deps_type=Deps,
@@ -379,6 +426,7 @@ def convert_to_model_messages(history: str) -> List:
 # --------------------- Front Agent Delegation Tools ---------------------
 
 @agent.tool
+@research_agent.tool
 async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> str:
     """
     Executes a CKAN action with the provided parameters.
@@ -451,6 +499,7 @@ def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None) -> 
 
 
 @agent.tool_plain
+@research_agent.tool_plain
 @ckan_agent.tool_plain
 def get_ckan_actions() -> Dict[str, FuncSignature]:
     """Lists all avalable CKAN actions by action name
@@ -506,9 +555,8 @@ def run_action(ctx: RunContext[Deps], action_name: str, parameters: Dict) -> Any
     except Exception as e:
         return {"error": str(e)}
     unpacked_response = unpack_lazy_json(response)
-    log.debug(type(unpacked_response))
     clean_response = process_entity(unpacked_response)
-    log.debug(clean_response)
+    #log.debug(clean_response)
     #log.debug("{} -> {}".format(len(str(response)), len(str(clean_response))))
     return clean_response
 
@@ -774,6 +822,7 @@ async def rag_search(
 
 
 @agent.tool
+@research_agent.tool
 async def literature_search(
     ctx: RunContext[Deps], search_question: str, num_results: int = 5
 ) -> list[str]:
@@ -820,7 +869,7 @@ async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) 
                 deps=doc,
                 usage_limits=UsageLimits(request_limit=50),
             ),
-            timeout=60
+            timeout=120
         )
     except asyncio.TimeoutError:
         msg="Timeout on literature_analyse attempt, retrying..."

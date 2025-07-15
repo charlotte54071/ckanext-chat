@@ -156,3 +156,42 @@ pre {
 .copy-button:hover {
   opacity: 1;
 }
+
+.toogle-button:after {
+  content: ""; /* Verhindert, dass ein Doppelpunkt oder andere Inhalte hinzugefügt werden */
+}
+
+.tool-call {
+  position: relative;
+  border: none;
+  background: white;
+  border-radius: 6px;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+}
+
+.tool-icon {
+  position: absolute;
+  top: 0; /* position icon at top inside the card */
+  left: 50%;
+  transform: translate(-50%, -50%); /* center horizontally & pull up 50% */
+  background: white;
+  padding: 0.4rem;
+  border-radius: 50%;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+  width: fit-content;
+}
+
+/* Hide content by default (shown via Bootstrap's collapse) */
+.tool-content {
+}
+
+/* Tooltip via native HTML title attribute */
+.tool-call:hover {
+  cursor: pointer;
+}
+
+/* Optional: bring to front on hover */
+.tool-call:hover {
+  z-index: 20;
+}
