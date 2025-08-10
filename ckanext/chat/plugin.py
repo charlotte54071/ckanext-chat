@@ -36,6 +36,9 @@ class ChatPlugin(plugins.SingletonPlugin, DefaultTranslation):
         declaration.declare(group.embedding_api, "")
         declaration.declare(group.milvus_url, "")
         declaration.declare(group.collection_name, "")
+        declaration.declare_bool(group.schema_aware, True)
+        declaration.declare(group.supported_schemas, "dataset,device,digitaltwin,geoobject,method,onlineapplication,onlineservice,project,software")
+        declaration.declare_bool(group.schema_context_enhancement, True)
 
     # IBlueprint
 

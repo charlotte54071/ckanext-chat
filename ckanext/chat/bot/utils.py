@@ -40,7 +40,9 @@ def init_dynamic_models():
 
 class DynamicDataset(BaseModel):
     id: str  # CKAN dataset id
+    type: Optional[str] = "dataset"  # Schema type
     view_url: Optional[str] = None
+    schema_context: Optional[Dict[str, Any]] = None
 
     class Config:
         extra = "allow"
@@ -51,6 +53,22 @@ class DynamicDataset(BaseModel):
         ckan_url = toolkit.config.get("ckan.site_url")
         if route and ckan_url:
             values["view_url"] = str(route.build_url(base_url=ckan_url,fill={"id": values.get("id")}))
+        
+        # Add schema context if schema-aware mode is enabled
+        dataset_type = values.get("type", "dataset")
+        if toolkit.asbool(toolkit.config.get("ckanext.chat.schema_aware", True)):
+            try:
+                schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': dataset_type})
+                values["schema_context"] = {
+                    'schema_type': dataset_type,
+                    'schema_fields': schema_info.get('dataset_fields', []),
+                    'resource_fields': schema_info.get('resource_fields', []),
+                    'about': schema_info.get('about', ''),
+                    'about_url': schema_info.get('about_url', '')
+                }
+            except Exception:
+                values["schema_context"] = {'schema_type': dataset_type}
+        
         resources = values.get("resources")
         if not isinstance(resources, list):
             raise ValueError(
@@ -64,6 +82,32 @@ class DynamicDataset(BaseModel):
     def from_ckan(cls, package: Package) -> "DynamicDataset":
         data = package.as_dict() if hasattr(package, "as_dict") else package.__dict__
         return cls(**data)
+    
+    def get_schema_field_info(self, field_name: str) -> Dict[str, Any]:
+        """Get information about a specific field from the schema context"""
+        if not self.schema_context:
+            return {}
+        
+        for field in self.schema_context.get('schema_fields', []):
+            if field.get('field_name') == field_name:
+                return field
+        
+        for field in self.schema_context.get('resource_fields', []):
+            if field.get('field_name') == field_name:
+                return field
+        
+        return {}
+    
+    def get_schema_type_description(self) -> str:
+        """Get a human-readable description of the schema type"""
+        if not self.schema_context:
+            return f"Dataset of type: {self.type}"
+        
+        about = self.schema_context.get('about', '')
+        if about:
+            return f"{self.type.title()} Schema: {about}"
+        
+        return f"Dataset using {self.type} schema"
 
 
 class DynamicResource(BaseModel):
@@ -445,3 +489,96 @@ async def fuzzy_search_early_cancel(
     #     f"Tried to match: '{pattern}' - no match found - took {duration:.4f} seconds"
     # )
     return "", -1, -1
+
+
+# --------------------- Schema-Aware Utility Functions ---------------------
+
+def get_schema_aware_search_context() -> Dict[str, Any]:
+    """Get context information for schema-aware searches"""
+    if not toolkit.asbool(toolkit.config.get("ckanext.chat.schema_aware", True)):
+        return {}
+    
+    schemas_config = toolkit.config.get("ckanext.chat.supported_schemas", "")
+    supported_schemas = [schema.strip() for schema in schemas_config.split(",") if schema.strip()]
+    
+    schema_contexts = {}
+    for schema_type in supported_schemas:
+        try:
+            schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
+            schema_contexts[schema_type] = {
+                'about': schema_info.get('about', ''),
+                'dataset_fields': [field.get('field_name') for field in schema_info.get('dataset_fields', [])],
+                'resource_fields': [field.get('field_name') for field in schema_info.get('resource_fields', [])],
+                'field_descriptions': {
+                    field.get('field_name'): field.get('label', field.get('field_name', ''))
+                    for field in schema_info.get('dataset_fields', []) + schema_info.get('resource_fields', [])
+                }
+            }
+        except Exception as e:
+            log.warning(f"Could not load schema info for {schema_type}: {e}")
+            schema_contexts[schema_type] = {'about': f'Schema type: {schema_type}'}
+    
+    return {
+        'supported_schemas': supported_schemas,
+        'schema_contexts': schema_contexts,
+        'schema_aware_enabled': True
+    }
+
+
+def enhance_search_query_with_schema_context(query: str, schema_type: str = None) -> str:
+    """Enhance search query with schema-specific context"""
+    if not toolkit.asbool(toolkit.config.get("ckanext.chat.schema_aware", True)):
+        return query
+    
+    schema_context = get_schema_aware_search_context()
+    
+    if schema_type and schema_type in schema_context.get('schema_contexts', {}):
+        schema_info = schema_context['schema_contexts'][schema_type]
+        about = schema_info.get('about', '')
+        if about:
+            return f"{query} (Schema: {schema_type} - {about})"
+    
+    return query
+
+
+def filter_datasets_by_schema(datasets: List[Dict[str, Any]], schema_types: List[str] = None) -> List[Dict[str, Any]]:
+    """Filter datasets by schema types"""
+    if not schema_types or not toolkit.asbool(toolkit.config.get("ckanext.chat.schema_aware", True)):
+        return datasets
+    
+    filtered_datasets = []
+    for dataset in datasets:
+        dataset_type = dataset.get('type', 'dataset')
+        if dataset_type in schema_types:
+            filtered_datasets.append(dataset)
+    
+    return filtered_datasets
+
+
+def get_schema_specific_field_mappings() -> Dict[str, Dict[str, str]]:
+    """Get field mappings for each schema type"""
+    schema_context = get_schema_aware_search_context()
+    mappings = {}
+    
+    for schema_type, context in schema_context.get('schema_contexts', {}).items():
+        field_descriptions = context.get('field_descriptions', {})
+        mappings[schema_type] = field_descriptions
+    
+    return mappings
+
+
+def suggest_schema_based_actions(dataset_type: str) -> List[str]:
+    """Suggest relevant actions based on dataset schema type"""
+    schema_specific_actions = {
+        'dataset': ['package_show', 'package_search', 'resource_show'],
+        'device': ['package_show', 'package_search', 'resource_show', 'device_status_check'],
+        'digitaltwin': ['package_show', 'package_search', 'resource_show', 'twin_simulation_run'],
+        'geoobject': ['package_show', 'package_search', 'resource_show', 'spatial_query'],
+        'method': ['package_show', 'package_search', 'resource_show', 'method_execution'],
+        'onlineapplication': ['package_show', 'package_search', 'resource_show', 'app_status_check'],
+        'onlineservice': ['package_show', 'package_search', 'resource_show', 'service_health_check'],
+        'project': ['package_show', 'package_search', 'resource_show', 'project_status'],
+        'software': ['package_show', 'package_search', 'resource_show', 'software_version_check']
+    }
+    
+    return schema_specific_actions.get(dataset_type, ['package_show', 'package_search', 'resource_show'])

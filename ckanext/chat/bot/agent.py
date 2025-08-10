@@ -31,7 +31,7 @@ from pydantic_ai.models.openai import OpenAIModel, OpenAIModelSettings
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
-from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature
+from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature, DynamicDataset, DynamicResource, truncate_output_by_token, get_schema_aware_search_context, enhance_search_query_with_schema_context, filter_datasets_by_schema, get_schema_specific_field_mappings, suggest_schema_based_actions
 
 
 log = logger.bind(module=__name__)
@@ -305,6 +305,12 @@ front_agent_prompt = (
     "- Execution and Verification:\n"
     "  - Present updates and changes, requesting user confirmation before proceeding, when running actions that chnage the data.\n"
     "  - Request confirmation if SSL verification is disabled (`ssl_verify=False` for downloads).\n"
+    "Schema-Aware Features:\n"
+    "- This CKAN instance supports multiple dataset schemas. Use `get_schema_context` to understand available schema types and their specific fields.\n"
+    "- When searching for datasets, consider using schema-specific filters with `fq` parameter like `fq=type:device` or `fq=type:digitaltwin`.\n"
+    "- Available schema types include: dataset, device, digitaltwin, geoobject, method, onlineapplication, onlineservice, project, software.\n"
+    "- Each schema type has specific fields and purposes. Use schema context to provide more relevant search results and suggestions.\n"
+    "- When presenting dataset information, include the schema type and relevant schema-specific fields.\n"
     "Guidelines:\n"
     "- if `ckan_run` fails adopt your call by the suggestions made in the response, add default parameters as necessarry.\n"
     "- CKAN entities are organized like following: Datasets or Packages contain Resources that can be Files or Links, Every Dataset lives in exactly one Organisation, but can be associated with multiple Groups."
@@ -508,6 +514,18 @@ def get_ckan_actions() -> Dict[str, FuncSignature]:
         List[str]: List of names of CKAN actions
     """
     return get_ckan_action()
+
+
+@agent.tool_plain
+@research_agent.tool_plain
+@ckan_agent.tool_plain
+def get_schema_context() -> Dict[str, Any]:
+    """Get information about available dataset schemas and their fields.
+    
+    Returns:
+        Dict[str, Any]: Schema context information including supported schemas and their details
+    """
+    return get_schema_aware_search_context()
 
 
 # @ckan_agent.tool_plain
