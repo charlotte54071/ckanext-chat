@@ -592,21 +592,34 @@ def get_schema_context() -> Dict[str, Any]:
     return get_schema_aware_search_context()
 
 
+# 替换你现有的 get_schema_field_suggestions(schema_type)
 @agent.tool_plain
 @research_agent.tool_plain
 @ckan_agent.tool_plain
 def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
     schema_context = get_schema_aware_search_context()
     scs = schema_context.get("schema_contexts", {})
-    if schema_type not in scs:
-        return {"error": f"Schema '{schema_type}' 不存在", "available_schemas": list(scs.keys())}
+    candidates = list(scs.keys())
 
-    info = scs[schema_type]
+    # 先把用户给的 schema 名称规范化
+    normalized, note = _normalize_schema_type(schema_type, candidates)
+    if not normalized:
+        return {
+            "status": "error",
+            "error": f"Schema '{schema_type}' 不存在",
+            "reason": note,
+            "available_schemas": candidates
+        }
+    if normalized != schema_type:
+        log.info("[schema-normalize] %s → %s (%s)", schema_type, normalized, note)
+    schema_type = normalized
+
+    info = scs.get(schema_type, {})
     dataset_fields = info.get("dataset_fields", [])
     resource_fields = info.get("resource_fields", [])
     field_descriptions = info.get("field_descriptions", {})
 
-    
+    # 如果 utils 仍返回的是“字符串字段名”，这里自愈：直接再读一次 scheming 完整字段对象
     if dataset_fields and isinstance(dataset_fields[0], str):
         try:
             schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
@@ -618,15 +631,18 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             }
             log.info("[schema-hydrate] reloaded full field objects for schema=%s", schema_type)
         except Exception as e:
-            log.warning("[schema-hydrate] failed: %s", e)
+            log.warning("[schema-hydrate] failed for %s: %s", schema_type, e)
 
     required_fields, optional_fields = [], []
     for f in dataset_fields:
-        
+        if not isinstance(f, dict):
+            # 仍然拿不到 dict，就让它显错，方便你在日志里定位
+            raise TypeError(f"dataset field is not a dict: {type(f)} -> {f}")
+
         validators_list = _split_validators(f.get("validators"))
         is_required = ("not_empty" in validators_list) or ("ignore_missing" not in validators_list)
 
-        field_info = {
+        entry = {
             "field_name": f.get("field_name", ""),
             "label": f.get("label", ""),
             "help_text": f.get("help_text", ""),
@@ -634,14 +650,15 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             "validators": f.get("validators", ""),
             "description": field_descriptions.get(f.get("field_name", ""), "")
         }
-        (required_fields if is_required else optional_fields).append(field_info)
+        (required_fields if is_required else optional_fields).append(entry)
 
     return {
+        "status": "ok",
         "schema_type": schema_type,
         "about": info.get("about", ""),
         "required_fields": required_fields,
         "optional_fields": optional_fields,
-        "resource_fields": resource_fields,     
+        "resource_fields": resource_fields,  
         "field_descriptions": field_descriptions,
         "creation_example": {
             "type": schema_type,
@@ -650,6 +667,7 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             "notes": f"Description for this {schema_type} dataset"
         }
     }
+
 
 
 
