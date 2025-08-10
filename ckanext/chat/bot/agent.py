@@ -32,7 +32,7 @@ from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature, DynamicDataset, DynamicResource, truncate_output_by_token, get_schema_aware_search_context, enhance_search_query_with_schema_context, filter_datasets_by_schema, get_schema_specific_field_mappings, suggest_schema_based_actions
-
+from difflib import get_close_matches
 
 log = logger.bind(module=__name__)
 
@@ -534,6 +534,35 @@ def build_ckan_url(route: RouteModel, fill: Optional[Dict[str, Any]] = None) -> 
     base_url= toolkit.config.get("ckan.site_url", "")
     return route.build_url(base_url=base_url or toolkit.config.get("ckan.site_url", ""), fill=fill)
 
+
+
+def _normalize_schema_type(s: str, candidates: list[str]):
+    """standardise 'online application/geoObject dataset' as schema key。"""
+    raw = s or ""
+    norm = re.sub(r"[\s_-]+", "", raw.strip().lower())
+    norm = re.sub(r"(dataset|data\s*set)$", "", norm)
+
+    aliases = {
+        "onlineapplication": "onlineapplication",
+        "onlineapp": "onlineapplication",
+        "online application": "onlineapplication",
+        "onlineservice": "onlineservice",
+        "online service": "onlineservice",
+        "geoobject": "geoobject",
+        "geo object": "geoobject",
+    }
+    if norm in aliases:
+        return aliases[norm], f"alias '{raw}' -> '{aliases[norm]}'"
+
+    norm_cands = {re.sub(r'[\s_-]+','', c.lower()): c for c in candidates}
+    if norm in norm_cands:
+        return norm_cands[norm], f"exact '{norm_cands[norm]}'"
+
+    hit = get_close_matches(norm, list(norm_cands.keys()), n=1, cutoff=0.6)
+    if hit:
+        return norm_cands[hit[0]], f"fuzzy '{norm_cands[hit[0]]}'"
+
+    return None, f"no match for '{raw}' in {candidates}"
 
 @agent.tool_plain
 @research_agent.tool_plain
