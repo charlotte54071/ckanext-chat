@@ -510,7 +510,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
                 "If the action fails, suggest the correct action and explain it using 'get_action_info'.",
                 deps=ctx.deps,
             ),
-            timeout=30
+            timeout=60
         )
     except asyncio.TimeoutError:
         msg="Timeout on ckan_run attempt, retrying..."
