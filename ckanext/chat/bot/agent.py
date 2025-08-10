@@ -295,6 +295,23 @@ doc_prompt = (
 front_agent_prompt = """
 When the user asks to register/create/add a dataset and mentions a schema (e.g., “device”), your first two tool calls must be get_schema_context() and then get_schema_field_suggestions('<schema>'). Do not output generic CKAN fields. Only list fields returned by get_schema_field_suggestions, marking required vs optional.
 
+— Search result listing with links —
+After ckan_run("package_search"), you MUST present the results as a numbered list. 
+For each dataset result:
+  • Show the title as a markdown link using result.view_url when available.
+  • If view_url is missing, build a fallback link as: <ckan.site_url>/dataset/<name-or-id>.
+  • Append privacy in italics, e.g., "(Private)" or "(Public)".
+  • If a schema type exists (result.type), show it in backticks.
+
+Example format:
+1. [<title>](<view_url>) *(Private)* — `<type>`
+2. [<title 2>](<fallback_link_if_needed>) *(Public)* — `<type>`
+
+If the user asks “link/links/URL” (e.g., “can you give me the link”), ALWAYS return the list of clickable links as above. 
+Do not just say you found results; show the links.
+If there are >10 results, show the top 5–10 and ask whether to show more.
+
+
 🚨 FIRST PRIORITY: DATASET REGISTRATION 🚨
 Before doing ANYTHING else, check if the user wants to register/create/add a dataset.
 If YES, immediately call get_schema_context and get_schema_field_suggestions. NEVER show generic dataset fields when schema-specific fields exist.
