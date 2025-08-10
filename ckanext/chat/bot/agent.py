@@ -621,21 +621,22 @@ def get_schema_context() -> Dict[str, Any]:
     return get_schema_aware_search_context()
 
 
-# 替换你现有的 get_schema_field_suggestions(schema_type)
+
 @agent.tool_plain
 @research_agent.tool_plain
 @ckan_agent.tool_plain
 def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
+    log.info("[schema] called with %s", schema_type)
     schema_context = get_schema_aware_search_context()
     scs = schema_context.get("schema_contexts", {})
     candidates = list(scs.keys())
 
-    # 先把用户给的 schema 名称规范化
+    # normalization
     normalized, note = _normalize_schema_type(schema_type, candidates)
     if not normalized:
         return {
             "status": "error",
-            "error": f"Schema '{schema_type}' 不存在",
+            "error": f"Schema '{schema_type}' not exists",
             "reason": note,
             "available_schemas": candidates
         }
@@ -648,7 +649,6 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
     resource_fields = info.get("resource_fields", [])
     field_descriptions = info.get("field_descriptions", {})
 
-    # 如果 utils 仍返回的是“字符串字段名”，这里自愈：直接再读一次 scheming 完整字段对象
     if dataset_fields and isinstance(dataset_fields[0], str):
         try:
             schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
@@ -665,7 +665,6 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
     required_fields, optional_fields = [], []
     for f in dataset_fields:
         if not isinstance(f, dict):
-            # 仍然拿不到 dict，就让它显错，方便你在日志里定位
             raise TypeError(f"dataset field is not a dict: {type(f)} -> {f}")
 
         validators_list = _split_validators(f.get("validators"))
@@ -681,7 +680,7 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
         }
         (required_fields if is_required else optional_fields).append(entry)
 
-    return {
+    res= {
         "status": "ok",
         "schema_type": schema_type,
         "about": info.get("about", ""),
@@ -696,7 +695,9 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             "notes": f"Description for this {schema_type} dataset"
         }
     }
-
+    log.info("[schema] %s required=%d optional=%d",
+             schema_type, len(required_fields), len(optional_fields)) 
+    return res
 
 
 
