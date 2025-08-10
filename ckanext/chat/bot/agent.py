@@ -311,6 +311,14 @@ front_agent_prompt = (
     "- Available schema types include: dataset, device, digitaltwin, geoobject, method, onlineapplication, onlineservice, project, software.\n"
     "- Each schema type has specific fields and purposes. Use schema context to provide more relevant search results and suggestions.\n"
     "- When presenting dataset information, include the schema type and relevant schema-specific fields.\n"
+    "Dataset Registration & Creation:\n"
+    "- ALWAYS call `get_schema_context` first when a user asks to register, create, or add a new dataset.\n"
+    "- Ask the user which schema type they want to use (device, digitaltwin, geoobject, method, onlineapplication, onlineservice, project, software, or basic dataset).\n"
+    "- Once the user selects a schema type, call `get_schema_field_suggestions` with the chosen schema type to get detailed field requirements.\n"
+    "- Present the schema-specific required and optional fields with their descriptions to help the user understand what information is needed.\n"
+    "- Guide the user through providing values for required fields and suggest relevant optional fields based on their use case.\n"
+    "- Include schema-specific fields like device specifications, project details, software versions, etc. based on the schema context.\n"
+    "- When creating the dataset with `ckan_run` and `package_create`, include the 'type' parameter to specify the schema type and all schema-specific fields provided by the user.\n"
     "Guidelines:\n"
     "- if `ckan_run` fails adopt your call by the suggestions made in the response, add default parameters as necessarry.\n"
     "- CKAN entities are organized like following: Datasets or Packages contain Resources that can be Files or Links, Every Dataset lives in exactly one Organisation, but can be associated with multiple Groups."
@@ -526,6 +534,70 @@ def get_schema_context() -> Dict[str, Any]:
         Dict[str, Any]: Schema context information including supported schemas and their details
     """
     return get_schema_aware_search_context()
+
+
+@agent.tool_plain
+@research_agent.tool_plain
+@ckan_agent.tool_plain
+def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
+    """Get field suggestions and requirements for a specific dataset schema type.
+    
+    Args:
+        schema_type (str): The schema type to get field suggestions for (e.g., 'device', 'project', 'software')
+    
+    Returns:
+        Dict[str, Any]: Field suggestions including required fields, optional fields, and field descriptions
+    """
+    schema_context = get_schema_aware_search_context()
+    
+    if schema_type not in schema_context.get('schema_contexts', {}):
+        return {
+            "error": f"Schema type '{schema_type}' not found",
+            "available_schemas": list(schema_context.get('schema_contexts', {}).keys())
+        }
+    
+    schema_info = schema_context['schema_contexts'][schema_type]
+    
+    # Extract field information
+    dataset_fields = schema_info.get('dataset_fields', [])
+    resource_fields = schema_info.get('resource_fields', [])
+    field_descriptions = schema_info.get('field_descriptions', {})
+    
+    # Organize fields by requirement level
+    required_fields = []
+    optional_fields = []
+    
+    for field in dataset_fields:
+        field_info = {
+            'field_name': field.get('field_name', ''),
+            'label': field.get('label', ''),
+            'help_text': field.get('help_text', ''),
+            'form_snippet': field.get('form_snippet', ''),
+            'validators': field.get('validators', ''),
+            'description': field_descriptions.get(field.get('field_name', ''), '')
+        }
+        
+        # Check if field is required based on validators
+        validators = field.get('validators', '')
+        if 'not_empty' in validators or 'ignore_missing' not in validators:
+            required_fields.append(field_info)
+        else:
+            optional_fields.append(field_info)
+    
+    return {
+        "schema_type": schema_type,
+        "about": schema_info.get('about', ''),
+        "required_fields": required_fields,
+        "optional_fields": optional_fields,
+        "resource_fields": resource_fields,
+        "field_descriptions": field_descriptions,
+        "creation_example": {
+            "type": schema_type,
+            "name": f"example-{schema_type}-dataset",
+            "title": f"Example {schema_type.title()} Dataset",
+            "notes": f"Description for this {schema_type} dataset"
+        }
+    }
 
 
 # @ckan_agent.tool_plain
