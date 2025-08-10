@@ -33,6 +33,15 @@ from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature, DynamicDataset, DynamicResource, truncate_output_by_token, get_schema_aware_search_context, enhance_search_query_with_schema_context, filter_datasets_by_schema, get_schema_specific_field_mappings, suggest_schema_based_actions
 
+try:
+    from ckanext.scheming.validation import validators_from_string
+except ImportError:
+    # Fallback if ckanext-scheming is not available
+    def validators_from_string(validators_string):
+        if not validators_string:
+            return []
+        return [v.strip() for v in validators_string.split() if v.strip()]
+
 
 log = logger.bind(module=__name__)
 
@@ -611,7 +620,7 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
     required_fields, optional_fields = [], []
 
     for f in dataset_fields:
-        validators_list = _split_validators(f.get("validators"))
+        validators_list = validators_from_string(f.get("validators", ""))
         is_required = ("not_empty" in validators_list) or ("ignore_missing" not in validators_list)
 
         field_info = {
