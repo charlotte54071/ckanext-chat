@@ -595,81 +595,53 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Field suggestions including required fields, optional fields, and field descriptions
     """
-    try:
-        # Get the full schema information directly from scheming
-        schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
-        
-        required_fields = []
-        optional_fields = []
-        field_details = {}
-        
-        # Process dataset fields
-        for field in schema_info.get('dataset_fields', []):
-            field_name = field.get('field_name')
-            if not field_name:
-                continue
-                
-            field_info = {
-                'field_name': field_name,
-                'label': field.get('label', field_name),
-                'help_text': field.get('help_text', ''),
-                'form_placeholder': field.get('form_placeholder', ''),
-                'preset': field.get('preset', ''),
-                'validators': field.get('validators', ''),
-                'choices': field.get('choices', [])
-            }
-            
-            # Check if field is required
-            is_required = (
-                field.get('required', False) or 
-                'required' in field.get('validators', '') or
-                'scheming_required' in field.get('validators', '')
-            )
-            
-            if is_required:
-                required_fields.append(field_info)
-            else:
-                optional_fields.append(field_info)
-                
-            field_details[field_name] = field_info
-        
-        # Process resource fields
-        resource_fields = []
-        for field in schema_info.get('resource_fields', []):
-            field_name = field.get('field_name')
-            if not field_name:
-                continue
-                
-            field_info = {
-                'field_name': field_name,
-                'label': field.get('label', field_name),
-                'help_text': field.get('help_text', ''),
-                'form_placeholder': field.get('form_placeholder', ''),
-                'preset': field.get('preset', ''),
-                'validators': field.get('validators', ''),
-                'choices': field.get('choices', [])
-            }
-            resource_fields.append(field_info)
-            field_details[f"resource_{field_name}"] = field_info
-        
+    schema_context = get_schema_aware_search_context()
+    scs = schema_context.get("schema_contexts", {})
+    if schema_type not in scs:
         return {
-            'schema_type': schema_type,
-            'about': schema_info.get('about', f'{schema_type} schema'),
-            'about_url': schema_info.get('about_url', ''),
-            'required_fields': required_fields,
-            'optional_fields': optional_fields,
-            'resource_fields': resource_fields,
-            'field_details': field_details,
-            'total_fields': len(required_fields) + len(optional_fields),
-            'example_usage': f"To create a {schema_type} dataset, you must provide: {', '.join([f['field_name'] for f in required_fields[:5]])}"
+            "error": f"Schema '{schema_type}' 不存在",
+            "available_schemas": list(scs.keys())
         }
-        
-    except Exception as e:
-        return {
-            'error': f'Could not load schema information for "{schema_type}": {str(e)}',
-            'schema_type': schema_type,
-            'suggestion': 'Please check if the schema type is correct and the scheming extension is properly configured.'
+
+    info = scs[schema_type]
+    dataset_fields = info.get("dataset_fields", [])
+    resource_fields = info.get("resource_fields", [])
+    field_descriptions = info.get("field_descriptions", {})
+
+    required_fields, optional_fields = [], []
+
+    for f in dataset_fields:
+        validators_list = _split_validators(f.get("validators"))
+        is_required = ("not_empty" in validators_list) or ("ignore_missing" not in validators_list)
+
+        field_info = {
+            "field_name": f.get("field_name", ""),
+            "label": f.get("label", ""),
+            "help_text": f.get("help_text", ""),
+            "form_snippet": f.get("form_snippet", ""),
+            "validators": f.get("validators", ""),
+            "description": field_descriptions.get(f.get("field_name", ""), "")
         }
+
+        if is_required:
+            required_fields.append(field_info)
+        else:
+            optional_fields.append(field_info)
+
+    return {
+        "schema_type": schema_type,
+        "about": info.get("about", ""),
+        "required_fields": required_fields,
+        "optional_fields": optional_fields,
+        "resource_fields": resource_fields,
+        "field_descriptions": field_descriptions,
+        "creation_example": {
+            "type": schema_type,
+            "name": f"example-{schema_type}-dataset",
+            "title": f"Example {schema_type.title()} Dataset",
+            "notes": f"Description for this {schema_type} dataset"
+        }
+    }
 
 
 # @ckan_agent.tool_plain
