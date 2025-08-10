@@ -494,18 +494,13 @@ async def fuzzy_search_early_cancel(
 # --------------------- Schema-Aware Utility Functions ---------------------
 
 def get_schema_aware_search_context() -> Dict[str, Any]:
-    """Get context information for schema-aware searches"""
     if not toolkit.asbool(toolkit.config.get("ckanext.chat.schema_aware", True)):
-        return {
-            "schema_aware_enabled": False,
-            "supported_schemas": [],
-            "schema_contexts": {}
-            }
-    
+        return {"schema_aware_enabled": False, "supported_schemas": [], "schema_contexts": {}}
+
     schemas_config = toolkit.config.get("ckanext.chat.supported_schemas", "")
-    supported_schemas = [schema.strip() for schema in schemas_config.split(",") if schema.strip()]
-    
+    supported_schemas = [s.strip() for s in schemas_config.split(",") if s.strip()]
     schema_contexts = {}
+
     for schema_type in supported_schemas:
         try:
             schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
@@ -513,15 +508,12 @@ def get_schema_aware_search_context() -> Dict[str, Any]:
             res_fields = schema_info.get('resource_fields', []) or []
             field_descriptions = {
                 f.get('field_name'): (f.get('label') or f.get('help_text') or f.get('field_name', ''))
-                for f in ds_fields + res_fields
-                if f.get('field_name')
+                for f in ds_fields + res_fields if f.get('field_name')
             }
-
-            # Keep complete fields
             schema_contexts[schema_type] = {
                 'about': schema_info.get('about', ''),
-                'dataset_fields': ds_fields,
-                'resource_fields': res_fields,
+                'dataset_fields': ds_fields,      # ← 保留完整 dict
+                'resource_fields': res_fields,    # ← 保留完整 dict
                 'field_descriptions': field_descriptions
             }
         except Exception as e:
@@ -532,12 +524,13 @@ def get_schema_aware_search_context() -> Dict[str, Any]:
                 'resource_fields': [],
                 'field_descriptions': {}
             }
-    
+
     return {
         'supported_schemas': supported_schemas,
         'schema_contexts': schema_contexts,
         'schema_aware_enabled': True
     }
+
 
 
 def enhance_search_query_with_schema_context(query: str, schema_type: str) -> str:

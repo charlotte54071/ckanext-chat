@@ -33,15 +33,6 @@ from pydantic_ai.usage import UsageLimits
 from pymilvus import MilvusClient
 from ckanext.chat.bot.utils import process_entity, unpack_lazy_json, RouteModel, get_ckan_url_patterns, CKAN_ACTIONS, get_ckan_action, fuzzy_search_early_cancel, FuncSignature, DynamicDataset, DynamicResource, truncate_output_by_token, get_schema_aware_search_context, enhance_search_query_with_schema_context, filter_datasets_by_schema, get_schema_specific_field_mappings, suggest_schema_based_actions
 
-try:
-    from ckanext.scheming.validation import validators_from_string
-except ImportError:
-    # Fallback if ckanext-scheming is not available
-    def validators_from_string(validators_string):
-        if not validators_string:
-            return []
-        return [v.strip() for v in validators_string.split() if v.strip()]
-
 
 log = logger.bind(module=__name__)
 
@@ -302,6 +293,7 @@ doc_prompt = (
 
 # --------------------- Updated Front Agent ---------------------
 front_agent_prompt = (
+    "When the user asks to register/create/add a dataset and mentions a schema (e.g., “device”), your first two tool calls must be get_schema_context() and then get_schema_field_suggestions('<schema>'). Do not output generic CKAN fields. Only list fields returned by get_schema_field_suggestions, marking required vs optional."
     "🚨 FIRST PRIORITY: DATASET REGISTRATION 🚨\n"
     "Before doing ANYTHING else, check if the user wants to register/create/add a dataset.\n"
     "If YES, immediately call get_schema_context and get_schema_field_suggestions tools.\n"
@@ -452,6 +444,14 @@ doc_agent = Agent(
 )
 
 
+def _split_validators(v):
+    if not v:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x).strip() for x in v]
+    return [p for p in re.split(r"[|,\s]+", str(v)) if p]
+
+
 def convert_to_model_messages(history: str) -> List:
     if history:
         history_list = json.loads(history)
@@ -596,31 +596,34 @@ def get_schema_context() -> Dict[str, Any]:
 @research_agent.tool_plain
 @ckan_agent.tool_plain
 def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
-    """Get field suggestions and requirements for a specific dataset schema type.
-    
-    Args:
-        schema_type (str): The schema type to get field suggestions for (e.g., 'device', 'project', 'software')
-    
-    Returns:
-        Dict[str, Any]: Field suggestions including required fields, optional fields, and field descriptions
-    """
     schema_context = get_schema_aware_search_context()
     scs = schema_context.get("schema_contexts", {})
     if schema_type not in scs:
-        return {
-            "error": f"Schema '{schema_type}' 不存在",
-            "available_schemas": list(scs.keys())
-        }
+        return {"error": f"Schema '{schema_type}' 不存在", "available_schemas": list(scs.keys())}
 
     info = scs[schema_type]
     dataset_fields = info.get("dataset_fields", [])
     resource_fields = info.get("resource_fields", [])
     field_descriptions = info.get("field_descriptions", {})
 
-    required_fields, optional_fields = [], []
+    
+    if dataset_fields and isinstance(dataset_fields[0], str):
+        try:
+            schema_info = toolkit.get_action('scheming_dataset_schema_show')({}, {'type': schema_type})
+            dataset_fields = schema_info.get('dataset_fields', []) or []
+            resource_fields = schema_info.get('resource_fields', []) or []
+            field_descriptions = {
+                f.get('field_name'): (f.get('label') or f.get('help_text') or f.get('field_name', ''))
+                for f in dataset_fields + resource_fields if f.get('field_name')
+            }
+            log.info("[schema-hydrate] reloaded full field objects for schema=%s", schema_type)
+        except Exception as e:
+            log.warning("[schema-hydrate] failed: %s", e)
 
+    required_fields, optional_fields = [], []
     for f in dataset_fields:
-        validators_list = validators_from_string(f.get("validators", ""))
+        
+        validators_list = _split_validators(f.get("validators"))
         is_required = ("not_empty" in validators_list) or ("ignore_missing" not in validators_list)
 
         field_info = {
@@ -631,18 +634,14 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             "validators": f.get("validators", ""),
             "description": field_descriptions.get(f.get("field_name", ""), "")
         }
-
-        if is_required:
-            required_fields.append(field_info)
-        else:
-            optional_fields.append(field_info)
+        (required_fields if is_required else optional_fields).append(field_info)
 
     return {
         "schema_type": schema_type,
         "about": info.get("about", ""),
         "required_fields": required_fields,
         "optional_fields": optional_fields,
-        "resource_fields": resource_fields,
+        "resource_fields": resource_fields,     
         "field_descriptions": field_descriptions,
         "creation_example": {
             "type": schema_type,
@@ -651,6 +650,7 @@ def get_schema_field_suggestions(schema_type: str) -> Dict[str, Any]:
             "notes": f"Description for this {schema_type} dataset"
         }
     }
+
 
 
 # @ckan_agent.tool_plain
