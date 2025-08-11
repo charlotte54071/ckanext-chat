@@ -527,7 +527,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
                 "If the action fails, suggest the correct action and explain it using 'get_action_info'.",
                 deps=ctx.deps,
             ),
-            timeout=60
+            timeout=600
         )
     except asyncio.TimeoutError:
         msg="Timeout on ckan_run attempt, retrying..."
@@ -1064,7 +1064,7 @@ async def literature_search(
                     deps=ctx.deps,
                     usage_limits=UsageLimits(request_limit=10),
                 ),
-                timeout=30
+                timeout=300
                 )
             break
         except (asyncio.TimeoutError):
@@ -1099,7 +1099,7 @@ async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) 
                 deps=doc,
                 usage_limits=UsageLimits(request_limit=50),
             ),
-            timeout=120
+            timeout=600
         )
     except asyncio.TimeoutError:
         msg="Timeout on literature_analyse attempt, retrying..."
