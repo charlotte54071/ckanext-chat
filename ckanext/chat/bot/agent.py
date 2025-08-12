@@ -91,6 +91,10 @@ think_model = OpenAIModel(
 # --------------------- Milvus and CKAN Setup ---------------------
 
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
+milvus_token = toolkit.config.get("ckanext.chat.milvus_token", os.getenv("MILVUS_TOKEN", ""))
+
+milvus_client = MilvusClient(uri=milvus_url, token=milvus_token)  # 关键：token
+
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
 embedding_model = toolkit.config.get(
     "ckanext.chat.embedding_model", "text-embedding-3-small"
@@ -99,7 +103,6 @@ embedding_api = toolkit.config.get("ckanext.chat.embedding_api", "")
 
 vector_dim = None
 if milvus_url:
-    milvus_client = MilvusClient(uri=milvus_url)
     if milvus_client:
         collection_info = milvus_client.describe_collection(
             collection_name=collection_name
@@ -983,16 +986,42 @@ async def get_embedding(chunks: List[str], model: str, api_url, vector_dim: int)
         # must be OAI embeddings
         emb_r = await api_url.create(input=chunks, model=model, dimensions=vector_dim)
         return [vec.embedding for vec in emb_r.data]
-    headers = {"accept": "application/json", "Content-Type": "application/json"}
-    data = {"chunks": chunks, "model": model}
-    response = requests.post(
-        api_url, headers=headers, data=json.dumps(data), verify=False
-    )
-
-    if response.status_code == 200:
-        return response.json()["embeddings"]
+    
+    # Check if it's an Azure OpenAI endpoint
+    if "openai.azure.com" in api_url or "cognitiveservices.azure.com" in api_url:
+        # Azure OpenAI API format
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": toolkit.config.get("ckanext.chat.api_token", "your-api-token")
+        }
+        data = {
+            "input": chunks,
+            "model": model
+        }
+        if vector_dim:
+            data["dimensions"] = vector_dim
+            
+        response = requests.post(
+            api_url, headers=headers, data=json.dumps(data), verify=False
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return [item["embedding"] for item in result["data"]]
+        else:
+            return {"error": response.status_code, "message": response.text}
     else:
-        return {"error": response.status_code, "message": response.text}
+        # Custom embedding API format
+        headers = {"accept": "application/json", "Content-Type": "application/json"}
+        data = {"chunks": chunks, "model": model}
+        response = requests.post(
+            api_url, headers=headers, data=json.dumps(data), verify=False
+        )
+
+        if response.status_code == 200:
+            return response.json()["embeddings"]
+        else:
+            return {"error": response.status_code, "message": response.text}
 
 
 @rag_agent.tool
