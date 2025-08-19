@@ -93,7 +93,20 @@ think_model = OpenAIModel(
 milvus_url = toolkit.config.get("ckanext.chat.milvus_url", "")
 milvus_token = toolkit.config.get("ckanext.chat.milvus_token", os.getenv("MILVUS_TOKEN", ""))
 
-milvus_client = MilvusClient(uri=milvus_url, token=milvus_token)  # 关键：token
+# 延迟初始化Milvus客户端
+milvus_client = None
+
+def get_milvus_client():
+    """延迟初始化Milvus客户端"""
+    global milvus_client
+    if milvus_client is None and milvus_url and milvus_token:
+        try:
+            milvus_client = MilvusClient(uri=milvus_url, token=milvus_token)
+            log.debug("Milvus client initialized successfully")
+        except Exception as e:
+            log.error(f"Failed to initialize Milvus client: {e}")
+            milvus_client = None
+    return milvus_client
 
 collection_name = toolkit.config.get("ckanext.chat.collection_name", "")
 embedding_model = toolkit.config.get(
@@ -102,39 +115,47 @@ embedding_model = toolkit.config.get(
 embedding_api = toolkit.config.get("ckanext.chat.embedding_api", "")
 
 vector_dim = None
-if milvus_url:
-    if milvus_client:
-        collection_info = milvus_client.describe_collection(
-            collection_name=collection_name
-        )
-        vector_field = None
-        for entry in collection_info["fields"]:
-            if "params" in entry.keys() and "dim" in entry["params"].keys():
-                vector_field = entry
-                break
-        if vector_field:
-            vector_dim = vector_field["params"]["dim"]
-            field_name = vector_field["name"]
-            log.debug(f"Found vector field: {field_name}")
-            log.debug(f"Vector dimension is: {vector_dim}")
+
+def get_vector_dim():
+    """获取向量维度"""
+    global vector_dim
+    if vector_dim is None:
+        client = get_milvus_client()
+        if client and collection_name:
+            try:
+                collection_info = client.describe_collection(
+                    collection_name=collection_name
+                )
+                vector_field = None
+                for entry in collection_info["fields"]:
+                    if "params" in entry.keys() and "dim" in entry["params"].keys():
+                        vector_field = entry
+                        break
+                if vector_field:
+                    vector_dim = vector_field["params"]["dim"]
+                    field_name = vector_field["name"]
+                    log.debug(f"Found vector field: {field_name}")
+                    log.debug(f"Vector dimension is: {vector_dim}")
+                else:
+                    vector_dim = None
+                    log.debug("No vector field found in the collection schema.")
+            except Exception as e:
+                log.error(f"Failed to get vector dimension: {e}")
+                vector_dim = None
         else:
-            vector_dim = None
-            log.debug("No vector field found in the collection schema.")
-    else:
-        log.debug("Milvus client not initialized.")
-else:
-    milvus_client = None
+            log.debug("Milvus client not initialized or collection name missing.")
+    return vector_dim
 
 @dataclass
 class Deps:
     user_id: str
-    milvus_client: MilvusClient = field(default_factory=lambda: milvus_client)
+    milvus_client: MilvusClient = field(default_factory=get_milvus_client)
     openai: OpenAIModel = field(default_factory=lambda: model)
     embeddings: Union[OAI_Embeddings, str] = field(default=embedding_api)
     embedding_model: str = field(default_factory=lambda: embedding_model)
     max_context_length: int = 8192
     collection_name: str = collection_name
-    vector_dim: int = vector_dim
+    vector_dim: int = field(default_factory=get_vector_dim)
     #file: Optional[TextResource] = None
 
 @dataclass
