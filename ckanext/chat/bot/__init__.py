@@ -1,0 +1,1 @@
+# Bot package for CKAN chat extension

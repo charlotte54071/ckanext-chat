@@ -22,6 +22,11 @@ from ckanext.chat.bot.agent import (exception_to_model_response,
 from ckanext.chat.helpers import service_available
 import json
 from flask import Response
+from loguru import logger
+from ckanext.chat.bot.agent import (
+        Deps, agent, research_agent, convert_to_model_messages
+    )
+from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
 
 
 #mp.set_start_method("spawn", force=True)
@@ -222,11 +227,7 @@ def async_agent_response(prompt: str, history: str, user_id: str, research: bool
         loop.close()
 
 async def _agent_worker(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
-    from loguru import logger
-    from ckanext.chat.bot.agent import (
-        Deps, agent, research_agent, convert_to_model_messages
-    )
-    from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
+  
 
     logger = logger.bind(process="worker", user_id=user_id)
     logger.debug(f"Worker starting for {user_id}")
