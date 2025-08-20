@@ -562,7 +562,7 @@ async def ckan_run(ctx: RunContext[Deps], command: str, parameters: dict={}) -> 
         log.error(msg)
         return msg
     #log.debug(f"ckan_run return: {r.data.json()}")
-    return r.data.json()
+    return r.output
     
 
 #@ckan_agent.tool_plain
@@ -1125,7 +1125,7 @@ async def literature_search(
     else:
         raise RuntimeError("All literature_search retries timed out")
     #log.debug(r.data)
-    return r.data.json()
+    return r.output
 
 @agent.tool_plain
 async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) -> list[str]:
@@ -1159,7 +1159,8 @@ async def literature_analyse(doc: TextResource, question: str, ssl_verify=True) 
         msg=f"Unexpected error on literature_analyse attempt: {str(e)}"
         log.error(msg)
         return msg
-    return r.data.json()
+    return r.output
+
 
 
 def get_user_token(user_id: str) -> Optional[str]:
