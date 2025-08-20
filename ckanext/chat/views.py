@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import multiprocessing as mp
 import os
 import sys
@@ -203,7 +204,7 @@ def ask():
                     if isinstance(part, TextPart) and getattr(part, "content", "") == "":
                         message.parts.remove(part)
 
-            payload = {"response": serialize_messages(messages)}
+            payload = {"response": serialize_messages_for_pydantic(messages)}  # 修改这行
             return Response(
                 json.dumps(payload, default=to_jsonable, ensure_ascii=False),
                 mimetype="application/json",
