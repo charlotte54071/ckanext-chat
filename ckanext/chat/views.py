@@ -112,12 +112,15 @@ def _part_kind_of(part) -> str:
 
 def serialize_part_for_pydantic(part):
     """
-    将 Part 序列化为 pydantic-ai 可还原的结构（关键是 part_kind）。
-    尽量保留必要字段，避免把复杂对象转成字符串。
+    serialize part to pydantic-ai compatible structure
     """
     kind = _part_kind_of(part)
+    content = getattr(part, "content", None)
+    if isinstance(content, str) and content.strip() == "":
+        return None
     d = {"part_kind": kind}
-    # 常见字段
+    # common fields
+
     if hasattr(part, "content"):
         d["content"] = getattr(part, "content", "")
     if hasattr(part, "tool_name"):
@@ -126,10 +129,12 @@ def serialize_part_for_pydantic(part):
         d["args"] = getattr(part, "args", {}) or {}
     if hasattr(part, "url"):
         d["url"] = str(getattr(part, "url"))
-    # 兜底附加
+    # extra fields
+
     extra = getattr(part, "__dict__", None)
     if extra:
-        # 删掉明显不可序列化/无用的内部字段
+        # delete obvious unserializable fields
+
         extra = {k: v for k, v in extra.items() if not k.startswith("_")}
         if extra:
             d["extra"] = to_jsonable(extra)
@@ -138,23 +143,32 @@ def serialize_part_for_pydantic(part):
 def serialize_message_for_pydantic(msg):
     """
     序列化消息为 pydantic-ai 可还原的消息结构：必须包含 kind、parts[*].part_kind。
+    正确识别 ModelRequest / ModelResponse，避免把用户请求渲染成机器人气泡。
     """
-    kind = getattr(msg, "kind", None)
-    if kind not in ("request", "response"):
-        # 简单判断：有 "model_name" / "usage" 的多半是 response
+    # 正确识别 kind
+    if isinstance(msg, ModelRequest) or getattr(msg, "kind", None) == "request":
+        kind = "request"
+    else:
         kind = "response"
+
+    parts = []
+    for p in getattr(msg, "parts", []):
+        sp = serialize_part_for_pydantic(p)
+        if sp is not None:  # 过滤空内容的 part，避免“空气泡”
+            parts.append(sp)
 
     data = {
         "kind": kind,
         "model_name": getattr(msg, "model_name", None),
         "timestamp": getattr(msg, "timestamp", None).isoformat()
             if getattr(msg, "timestamp", None) else None,
-        "parts": [serialize_part_for_pydantic(p) for p in getattr(msg, "parts", [])],
+        "parts": parts,
     }
     usage = getattr(msg, "usage", None)
     if usage is not None:
         data["usage"] = to_jsonable(usage)  # dataclass -> dict
     return data
+
 
 def serialize_messages_for_pydantic(messages):
     return [serialize_message_for_pydantic(m) for m in messages]
@@ -212,12 +226,12 @@ def ask():
             )
 
         except Exception as e:
-            user_prompt = user_input_to_model_request(user_input)
+            user_prompt = user_input_to_model_request(user_input or "")
             error_response = exception_to_model_response(e)
             log.error(error_response)
 
+            messages = [user_prompt, error_response]
             payload = {"response": serialize_messages_for_pydantic(messages)}
-
             return safe_json_response(payload, 200)
 
 def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:

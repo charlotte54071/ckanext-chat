@@ -408,6 +408,17 @@ Guidelines:
 
 Avoid assumptions:
 - Don’t invent formats, content, or links. Don’t output placeholder links or data.
+
+
+— Dataset creation execution —
+When the user has provided enough required fields for a given schema (you can determine from get_schema_field_suggestions),
+you MUST call:
+  ckan_run("package_create", {<collected params>})
+Rules:
+- Map the schema's required fields to CKAN fields (e.g., title->title, url->name, description->notes, tags->tags, license->license_id, group->group, author->author, owner_org->organization if provided).
+- Only ask follow-up questions for truly missing required fields.
+- After a successful creation, return a short confirmation and the dataset URL.
+
 """
 
 
