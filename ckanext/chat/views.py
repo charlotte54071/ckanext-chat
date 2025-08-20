@@ -20,6 +20,9 @@ from pydantic_ai.messages import TextPart
 from ckanext.chat.bot.agent import (exception_to_model_response,
                                     user_input_to_model_request)
 from ckanext.chat.helpers import service_available
+import json
+from flask import Response
+
 
 #mp.set_start_method("spawn", force=True)
 logger.remove()
@@ -71,45 +74,108 @@ class ChatView(MethodView):
             },
         )
 
+def to_jsonable(obj):
+    # Ckan result
+    if hasattr(obj, "as_dict"):
+        return obj.as_dict()
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict()
+        except Exception:
+            pass
+    if isinstance(obj, (set,)):
+        return list(obj)
+    return str(obj)
+
+def serialize_part(part):
+    # pydantic-ai common part types
+
+    try:
+        d = {}
+        if hasattr(part, "content"):
+            d["type"] = type(part).__name__
+            d["content"] = part.content
+            return d
+        if hasattr(part, "url"):
+            return {"type": type(part).__name__, "url": str(part.url)}
+        return to_jsonable(part)
+    except Exception:
+        return to_jsonable(part)
+
+def serialize_message(msg):
+    try:
+        data = {
+            "type": type(msg).__name__,
+            "model_name": getattr(msg, "model_name", None),
+            "kind": getattr(msg, "kind", None),
+            "timestamp": getattr(msg, "timestamp", None).isoformat()
+                if getattr(msg, "timestamp", None) else None,
+            "parts": [serialize_part(p) for p in getattr(msg, "parts", [])],
+        }
+        usage = getattr(msg, "usage", None)
+        if usage is not None:
+            data["usage"] = to_jsonable(usage)
+        return data
+    except Exception:
+        return to_jsonable(msg)
+
+def serialize_messages(messages):
+    # josn
+    return [serialize_message(m) for m in messages]
+
 def ask():
     logger.debug(request.form)
     user_input = request.form.get("text")
     history = request.form.get("history", "")
-    research= request.form.get("reserach", False)
+
+    # 兼容拼写：前端可能传 reserach / research 任意一个
+    research_raw = request.form.get("reserach", request.form.get("research", False))
+    # 归一化为布尔
+    research = str(research_raw).lower() in {"1", "true", "yes", "on"}
+
     max_retries = 3
     attempt = 0
     tkuser = toolkit.current_user
     debug = bool(strtobool(os.environ.get("DEBUG", "false")))
-    # If they're not a logged in user, don't allow them to see content
+
     if tkuser.name is None:
-        return {"success": False, "msg": "Must be logged in to view site"}
+        payload = {"success": False, "msg": "Must be logged in to view site"}
+        return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json", status=401)
+
     while attempt < max_retries:
         try:
             response = asyncio.run(
                 async_agent_response(user_input, history, user_id=tkuser.id, research=research),
                 debug=debug,
             )
-            # Now response is guaranteed to have new_messages() if no exception occurred.
-            # Ensure new_messages() is awaited in the sync wrapper if it's async
+
             messages = response.new_messages()
-            # for msg in messages:
-            #    logger.debug(msg)
-            # remove empty text responses parts
-            [
-                [
-                    message.parts.remove(part)
-                    for part in message.parts
-                    if isinstance(part, TextPart) and part.content == ""
-                ]
-                for message in messages
-            ]
-            return jsonify({"response": messages})
+
+            # remove none
+            for message in messages:
+                parts_copy = list(getattr(message, "parts", []))
+                for part in parts_copy:
+                    if isinstance(part, TextPart) and getattr(part, "content", "") == "":
+                        message.parts.remove(part)
+
+            payload = {"response": serialize_messages(messages)}
+            return Response(
+                json.dumps(payload, default=to_jsonable, ensure_ascii=False),
+                mimetype="application/json",
+                status=200,
+            )
 
         except Exception as e:
-            user_promt = user_input_to_model_request(user_input)
+            user_prompt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
             logger.error(error_response)
-            return jsonify({"response": [user_promt, error_response]})
+
+            payload = {"response": serialize_messages([user_prompt, error_response])}
+            return Response(
+                json.dumps(payload, default=to_jsonable, ensure_ascii=False),
+                mimetype="application/json",
+                status=200,
+            )
 
 def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     loop = asyncio.new_event_loop()
