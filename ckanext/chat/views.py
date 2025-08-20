@@ -28,14 +28,14 @@ from ckanext.chat.bot.agent import (
     )
 from ckanext.chat.bot.utils import init_dynamic_models, dynamic_models_initialized
 
-
+log = logger.bind(module=__name__)
 #mp.set_start_method("spawn", force=True)
-logger.remove()
+log.remove()
 if bool(strtobool(os.environ.get("DEBUG", "false"))):
     log_level = "DEBUG"
 else:
     log_level = "ERROR"
-logger.add(
+log.add(
     sys.stderr,
     format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | [{name}] {message}",
     level=log_level,
@@ -166,7 +166,7 @@ def safe_json_response(payload: dict, status: int = 200) -> Response:
     )
 
 def ask():
-    logger.debug(request.form)
+    log.debug(request.form)
     user_input = request.form.get("text")
     raw_history = request.form.get("history", "")
     msg_history = convert_to_model_messages(raw_history)
@@ -186,6 +186,7 @@ def ask():
         return Response(json.dumps(payload, ensure_ascii=False), mimetype="application/json", status=401)
 
     while attempt < max_retries:
+        messages = []
         try:
             response = asyncio.run(
                 async_agent_response(user_input, msg_history, user_id=tkuser.id, research=research),
@@ -212,7 +213,7 @@ def ask():
         except Exception as e:
             user_prompt = user_input_to_model_request(user_input)
             error_response = exception_to_model_response(e)
-            logger.error(error_response)
+            log.error(error_response)
 
             payload = {"response": serialize_messages_for_pydantic(messages)}
 
@@ -229,8 +230,8 @@ def async_agent_response(prompt: str, history: str, user_id: str, research: bool
 async def _agent_worker(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
   
 
-    logger = logger.bind(process="worker", user_id=user_id)
-    logger.debug(f"Worker starting for {user_id}")
+    worker_log  = log.bind(process="worker", user_id=user_id)
+    worker_log.debug(f"Worker starting for {user_id}")
 
     if not dynamic_models_initialized:
         init_dynamic_models()
@@ -251,8 +252,8 @@ async def _agent_worker(prompt: str, history: str, user_id: str, research: bool 
             deps=deps,
         )
 
-    logger.debug(f"Worker done, result: {r}")
-    await logger.complete()
+    log.debug(f"Worker done, result: {r}")
+    await log.complete()
     return r
 
 
