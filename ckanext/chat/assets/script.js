@@ -440,6 +440,7 @@ ckan.module("chat-module", function ($, _) {
           ],
         };
         self.appendMessage(messageObject);
+        self.saveChat([messageObject], self.currentChatLabel);
         var chatHistory = self.getChatHistory();
         var sendButton = this.el.find("#sendButton");
         var spinner = sendButton.find(".spinner-border");
