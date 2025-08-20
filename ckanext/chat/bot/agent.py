@@ -515,11 +515,24 @@ def _split_validators(v):
     return [p for p in re.split(r"[|,\s]+", str(v)) if p]
 
 
-def convert_to_model_messages(history: str) -> List:
-    if history:
-        history_list = json.loads(history)
-        return ModelMessagesTypeAdapter.validate_python(history_list)
-    return None
+def convert_to_model_messages(history: Optional[str]) -> Optional[List]:
+    """
+    Transform history data to model messages
+
+    """
+    if not history:
+        return None
+    try:
+        maybe = json.loads(history) if isinstance(history, str) else history
+    except Exception as e:
+        log.warning(f"History is not valid JSON, ignored: {e}")
+        return None
+
+    try:
+        return ModelMessagesTypeAdapter.validate_python(maybe)
+    except Exception as e:
+        log.warning(f"History fails pydantic-ai validation (will be ignored): {e}")
+        return None
 
 
 

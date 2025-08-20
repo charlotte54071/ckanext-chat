@@ -74,59 +74,97 @@ class ChatView(MethodView):
             },
         )
 
+PART_KIND_MAP = {
+    "SystemPromptPart": "system",
+    "UserPromptPart": "user",
+    "TextPart": "text",
+    "ToolCallPart": "tool_call",
+    "ToolReturnPart": "tool_return",
+}
+
 def to_jsonable(obj):
-    # Ckan result
+    # 通用兜底
     if hasattr(obj, "as_dict"):
         return obj.as_dict()
+    if dataclasses.is_dataclass(obj):
+        return dataclasses.asdict(obj)
     if hasattr(obj, "dict"):
         try:
             return obj.dict()
         except Exception:
             pass
-    if isinstance(obj, (set,)):
+    if isinstance(obj, set):
         return list(obj)
     return str(obj)
 
-def serialize_part(part):
-    # pydantic-ai common part types
+def _part_kind_of(part) -> str:
+    # 优先用对象自带的 part_kind；没有就按类名映射
+    pk = getattr(part, "part_kind", None)
+    if pk:
+        return pk
+    return PART_KIND_MAP.get(type(part).__name__, "text")
 
-    try:
-        d = {}
-        if hasattr(part, "content"):
-            d["type"] = type(part).__name__
-            d["content"] = part.content
-            return d
-        if hasattr(part, "url"):
-            return {"type": type(part).__name__, "url": str(part.url)}
-        return to_jsonable(part)
-    except Exception:
-        return to_jsonable(part)
+def serialize_part_for_pydantic(part):
+    """
+    将 Part 序列化为 pydantic-ai 可还原的结构（关键是 part_kind）。
+    尽量保留必要字段，避免把复杂对象转成字符串。
+    """
+    kind = _part_kind_of(part)
+    d = {"part_kind": kind}
+    # 常见字段
+    if hasattr(part, "content"):
+        d["content"] = getattr(part, "content", "")
+    if hasattr(part, "tool_name"):
+        d["tool_name"] = getattr(part, "tool_name", "")
+    if hasattr(part, "args"):
+        d["args"] = getattr(part, "args", {}) or {}
+    if hasattr(part, "url"):
+        d["url"] = str(getattr(part, "url"))
+    # 兜底附加
+    extra = getattr(part, "__dict__", None)
+    if extra:
+        # 删掉明显不可序列化/无用的内部字段
+        extra = {k: v for k, v in extra.items() if not k.startswith("_")}
+        if extra:
+            d["extra"] = to_jsonable(extra)
+    return d
 
-def serialize_message(msg):
-    try:
-        data = {
-            "type": type(msg).__name__,
-            "model_name": getattr(msg, "model_name", None),
-            "kind": getattr(msg, "kind", None),
-            "timestamp": getattr(msg, "timestamp", None).isoformat()
-                if getattr(msg, "timestamp", None) else None,
-            "parts": [serialize_part(p) for p in getattr(msg, "parts", [])],
-        }
-        usage = getattr(msg, "usage", None)
-        if usage is not None:
-            data["usage"] = to_jsonable(usage)
-        return data
-    except Exception:
-        return to_jsonable(msg)
+def serialize_message_for_pydantic(msg):
+    """
+    序列化消息为 pydantic-ai 可还原的消息结构：必须包含 kind、parts[*].part_kind。
+    """
+    kind = getattr(msg, "kind", None)
+    if kind not in ("request", "response"):
+        # 简单判断：有 "model_name" / "usage" 的多半是 response
+        kind = "response"
 
-def serialize_messages(messages):
-    # josn
-    return [serialize_message(m) for m in messages]
+    data = {
+        "kind": kind,
+        "model_name": getattr(msg, "model_name", None),
+        "timestamp": getattr(msg, "timestamp", None).isoformat()
+            if getattr(msg, "timestamp", None) else None,
+        "parts": [serialize_part_for_pydantic(p) for p in getattr(msg, "parts", [])],
+    }
+    usage = getattr(msg, "usage", None)
+    if usage is not None:
+        data["usage"] = to_jsonable(usage)  # dataclass -> dict
+    return data
+
+def serialize_messages_for_pydantic(messages):
+    return [serialize_message_for_pydantic(m) for m in messages]
+
+def safe_json_response(payload: dict, status: int = 200) -> Response:
+    return Response(
+        json.dumps(payload, default=to_jsonable, ensure_ascii=False),
+        mimetype="application/json",
+        status=status,
+    )
 
 def ask():
     logger.debug(request.form)
     user_input = request.form.get("text")
-    history = request.form.get("history", "")
+    raw_history = request.form.get("history", "")
+    msg_history = convert_to_model_messages(raw_history)
 
     # 兼容拼写：前端可能传 reserach / research 任意一个
     research_raw = request.form.get("reserach", request.form.get("research", False))
@@ -145,9 +183,10 @@ def ask():
     while attempt < max_retries:
         try:
             response = asyncio.run(
-                async_agent_response(user_input, history, user_id=tkuser.id, research=research),
+                async_agent_response(user_input, msg_history, user_id=tkuser.id, research=research),
                 debug=debug,
             )
+
 
             messages = response.new_messages()
 
@@ -170,12 +209,9 @@ def ask():
             error_response = exception_to_model_response(e)
             logger.error(error_response)
 
-            payload = {"response": serialize_messages([user_prompt, error_response])}
-            return Response(
-                json.dumps(payload, default=to_jsonable, ensure_ascii=False),
-                mimetype="application/json",
-                status=200,
-            )
+            payload = {"response": serialize_messages_for_pydantic(messages)}
+
+            return safe_json_response(payload, 200)
 
 def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     loop = asyncio.new_event_loop()
