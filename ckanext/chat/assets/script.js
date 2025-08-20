@@ -327,24 +327,7 @@ ckan.module("chat-module", function ($, _) {
             </div>
         `);
       }
-      function createToolHtml(markdown, id, tool_id, tool_name, timestamp, succeeded = true) {
-        // const statusClass = succeeded ? "border-success" : "border-danger";
-        return $(`
-          <div class="tool-call card position-relative m-3" id="${id}" data-tool-id="${tool_id}" title="Tool Call: ${tool_name}">
-            <!-- Overlapping Icon -->
-            <div class="tool-icon position-absolute top-0 start-50 translate-middle bg-white p-2 rounded-circle shadow" role="button" style="z-index:10;">
-              <i class="fas fa-robot fa-2x text-${succeeded ? 'success' : 'danger'}"></i>
-            </div>
-            
-            <!-- Collapsible Content -->
-            <div class="collapse tool-content mt-3" id="${tool_id}">
-                <h3 class="card-title">Tool Call: ${tool_name}</h5>
-                <div class="card-text mb-1 small text-muted">${timestamp}</div>
-                ${renderMarkdown(markdown)}
-            </div>
-          </div>
-        `);
-      }        
+      // createToolHtml函数已移除，因为后端已过滤工具调用消息        
       function formatContent(content) {
         if (typeof content === "object" && content !== null) {
           if (Array.isArray(content)) {
@@ -370,132 +353,46 @@ ckan.module("chat-module", function ($, _) {
           return String(content);
         }
       }
-      function combineParts(parts) {
-        return parts
-          .map((part) => {
-            // Extrahiere die relevanten Eigenschaften
-            const { content, args } = part;
-            // Erstelle eine Markdown-Darstellung
-            let markdown = "";
-            if (content) {
-              markdown += formatContent(content);
-            }
-            if (args) {
-              markdown += formatContent(JSON.parse(args)); // args könnte ein JSON-String sein
-            }
-            return markdown;
-          })
-          .join("\n"); // Teile die Ergebnisse durch Zeilenumbrüche
-      }
+      // combineParts函数已移除，因为前端已简化处理
       function updateChatbox() {
         const chatbox = $("#chatbox");
         chatbox.empty(); // Clear chatbox
       
-        let toolStack = null;
-        let inToolGroup = false;
-      
         timeline.forEach((entry, index) => {
-          const { timestamp, parts, tool_call_id, tool_name } = entry;
+          const { timestamp, parts } = entry;
       
-          if (tool_call_id) {
-            const combinedMarkdown = combineParts(entry.parts);
-            const toolHtml = createToolHtml(
-              combinedMarkdown,
-              `timeline-${index}`,
-              `tool-${tool_call_id}`,
-              tool_name || "Unknown Tool",
-              timestamp,
-            );
+          // 简化处理：后端已过滤工具消息，只处理可见文本
+          parts.forEach((part) => {
+            if (part.part_kind === "system-prompt") return;
       
-            toolHtml.on("click", function () {
-              self.toggleDetails(`tool-${tool_call_id}`);
-            });
+            const Msg = part.part_kind === "user-prompt"
+              ? createMessageHtml(true, part.content, `timeline-${index}`)
+              : createMessageHtml(false, part.content, `timeline-${index}`);
       
-            if (!inToolGroup) {
-              // Start a new tool stack
-              toolStack = $('<div id="tool-stack" class="d-flex flex-row align-items-start flex-wrap my-3 ms-5"></div>');
-              inToolGroup = true;
-            }
-      
-            toolStack.append(toolHtml);
-          } else {
-            // Flush tool stack before rendering non-tool messages
-            if (inToolGroup && toolStack) {
-              chatbox.append(toolStack);
-              toolStack = null;
-              inToolGroup = false;
-            }
-      
-            // Render normal messages
-            parts.forEach((part) => {
-              if (part.part_kind === "system-prompt") return;
-      
-              const Msg = part.part_kind === "user-prompt"
-                ? createMessageHtml(true, part.content, `timeline-${index}`)
-                : createMessageHtml(false, part.content, `timeline-${index}`);
-      
-              chatbox.append(Msg);
-            });
-          }
+            chatbox.append(Msg);
+          });
         });
-      
-        // Flush remaining tool stack if timeline ends with it
-        if (inToolGroup && toolStack) {
-          chatbox.append(toolStack);
-        }
       }      
       const { timestamp, parts } = message;
-      parts.forEach((part) => {
-        const { tool_call_id } = part;
-        // Wenn die tool_call_id existiert, kombiniere die Teile
-        if (tool_call_id) {
-          const existingEntry = timeline.find(
-            (entry) => entry.tool_call_id === tool_call_id,
-          );
-          if (existingEntry) {
-            // Füge den aktuellen Teil zur bestehenden Eintragung hinzu
-            existingEntry.parts.push(part);
-          } else {
-            // Erstelle eine neue Eintragung für diesen tool_call_id
-            timeline.push({
-              tool_call_id: tool_call_id,
-              timestamp: timestamp,
-              parts: [part],
-              tool_name: part.tool_name,
-            });
-          }
-        } else {
-          timeline.push({
-            timestamp: timestamp,
-            parts: [part],
-          });
-        }
-      });
-      // Entferne Duplikate aus den parts-Arrays
-      timeline.forEach((entry) => {
-        const uniqueParts = Array.from(
-          new Set(entry.parts.map((part) => JSON.stringify(part))),
-        ).map((part) => JSON.parse(part));
-        entry.parts = uniqueParts;
-      });
-      // Entferne Duplikate aus den parts-Arrays basierend auf part_kind und Zeitstempel
-      timeline.forEach((entry) => {
-        const latestParts = {}; // Ein Objekt, um den neuesten Teil für jeden part_kind zu speichern
-        entry.parts.forEach((part) => {
-          const { part_kind, timestamp } = part;
-          // Überprüfen, ob wir bereits einen Teil für diesen part_kind haben
-          if (
-            !latestParts[part_kind] ||
-            new Date(timestamp) > new Date(latestParts[part_kind].timestamp)
-          ) {
-            latestParts[part_kind] = part; // Speichere den Teil, wenn er der neueste ist
-          }
-        });
-        // Konvertiere das Object zurück in ein Array
-        entry.parts = Object.values(latestParts);
-      });
-
-      // Sortiere die Timeline nach Timestamp
+      
+      // 简化处理：直接添加消息到timeline，后端已处理去重和过滤
+      const messageId = timestamp + JSON.stringify(parts);
+      const existingMessage = timeline.find(entry => 
+        entry.messageId === messageId
+      );
+      
+      if (existingMessage) {
+        return; // Skip duplicate messages
+      }
+      
+      // 直接添加消息，不需要复杂的工具调用处理
+       timeline.push({
+         timestamp: timestamp,
+         parts: parts,
+         messageId: messageId
+       });
+      
+      // Sort timeline by timestamp
       timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       updateChatbox();
       chatbox.find("pre code").each(function () {
@@ -511,13 +408,7 @@ ckan.module("chat-module", function ($, _) {
       $('[data-bs-toggle="tooltip"]').tooltip();
     },
 
-    // Toggle collapsible details for tool messages.
-    toggleDetails: function (collapseId) {
-      var collapseElement = document.getElementById(collapseId);
-      if (collapseElement) {
-        new bootstrap.Collapse(collapseElement, { toggle: true });
-      }
-    },
+    // toggleDetails函数已移除，因为不再处理工具调用
     // Retrieve text from the last entry (used for renaming the chat)
     getLastEntryText: function (array) {
       var lastEntry = array[array.length - 1];
@@ -537,6 +428,7 @@ ckan.module("chat-module", function ($, _) {
         const messageObject = {
           instructions: null,
           kind: "request",
+          timestamp: now,
           parts: [
             {
               content: text,

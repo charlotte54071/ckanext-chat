@@ -116,6 +116,11 @@ def serialize_part_for_pydantic(part):
     serialize part to pydantic-ai compatible structure
     """
     kind = _part_kind_of(part)
+    
+    # 关键：不把工具类 part 传回前端，避免"空气泡"
+    if kind in {"tool_call", "tool_return"}:
+        return None
+        
     content = getattr(part, "content", None)
     if isinstance(content, str) and content.strip() == "":
         return None
@@ -155,8 +160,12 @@ def serialize_message_for_pydantic(msg):
     parts = []
     for p in getattr(msg, "parts", []):
         sp = serialize_part_for_pydantic(p)
-        if sp is not None:  # 过滤空内容的 part，避免“空气泡”
+        if sp is not None:  # 过滤空内容的 part，避免"空气泡"
             parts.append(sp)
+    
+    # 如果是机器人回复但没有任何可展示的文本，就不要返回这条消息
+    if kind == "response" and not parts:
+        return None
 
     data = {
         "kind": kind,
@@ -173,7 +182,9 @@ def serialize_message_for_pydantic(msg):
 
 
 def serialize_messages_for_pydantic(messages):
-    return [serialize_message_for_pydantic(m) for m in messages]
+    serialized = [serialize_message_for_pydantic(m) for m in messages]
+    # 过滤掉None消息
+    return [msg for msg in serialized if msg is not None]
 
 def safe_json_response(payload: dict, status: int = 200) -> Response:
     return Response(
@@ -213,14 +224,21 @@ def ask():
 
             messages = response.new_messages()
 
-            # remove none
-            for message in messages:
-                parts_copy = list(getattr(message, "parts", []))
-                for part in parts_copy:
-                    if isinstance(part, TextPart) and getattr(part, "content", "") == "":
-                        message.parts.remove(part)
+            # 合并可见文本为单一回复，避免消息顺序错乱
+            visible_msgs = []
+            for m in messages:
+                # 只保留机器人可见文本
+                if getattr(m, "kind", None) == "response" or isinstance(m, ModelResponse):
+                    texts = [p.content for p in getattr(m, "parts", []) if isinstance(p, TextPart) and p.content.strip()]
+                    if texts:
+                        merged = "\n\n".join(texts)
+                        visible_msgs.append({
+                            "kind": "response",
+                            "parts": [{"part_kind": "text", "content": merged}],
+                            "timestamp": getattr(m, "timestamp", None).isoformat() if getattr(m, "timestamp", None) else None,
+                        })
 
-            payload = {"response": serialize_messages_for_pydantic(messages)}  # 修改这行
+            payload = {"response": visible_msgs}
             return Response(
                 json.dumps(payload, default=to_jsonable, ensure_ascii=False),
                 mimetype="application/json",
