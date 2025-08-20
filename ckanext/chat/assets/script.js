@@ -424,6 +424,8 @@ ckan.module("chat-module", function ($, _) {
       var self = this;
       var text = this.el.find("#userInput").val();
       this.el.find("#userInput").val("");
+      const now = new Date().toISOString();
+
       if (text.trim() !== "") {
         const messageObject = {
           instructions: null,
@@ -656,3 +658,26 @@ ckan.module("chat-module", function ($, _) {
     },
   };
 });
+
+if (typeof window.sendMessage !== "function") {
+  window.sendMessage = function () {
+    // 优先触发模块内绑定的按钮点击
+    var btn = $('#sendButton');
+    if (btn.length) {
+      btn.trigger('click');
+      return false;
+    }
+    // 兜底：直接调用模块实例的方法
+    try {
+      var $el = $('[data-module="chat-module"]').first();
+      var inst = $el.data('module') || $el.data('module-instance');
+      if (inst && typeof inst.sendMessage === 'function') {
+        inst.sendMessage();
+        return false;
+      }
+    } catch (e) {
+      console.warn('sendMessage shim failed:', e);
+    }
+    return false;
+  };
+}
