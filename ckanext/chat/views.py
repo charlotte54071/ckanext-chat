@@ -13,7 +13,8 @@ from ckan.common import _, current_user
 from flask import Blueprint, current_app, jsonify, request
 from flask.views import MethodView
 from loguru import logger
-from pydantic_ai.messages import TextPart
+from pydantic_ai.messages import TextPart,ModelRequest,ModelResponse
+
 
 # from ckanext.chat.bot.agent import (Deps, async_agent_response,
 #                                     exception_to_model_response,
@@ -170,6 +171,7 @@ def serialize_message_for_pydantic(msg):
     return data
 
 
+
 def serialize_messages_for_pydantic(messages):
     return [serialize_message_for_pydantic(m) for m in messages]
 
@@ -230,9 +232,12 @@ def ask():
             error_response = exception_to_model_response(e)
             log.error(error_response)
 
-            messages = [user_prompt, error_response]
-            payload = {"response": serialize_messages_for_pydantic(messages)}
+            err_messages = [user_prompt, error_response]
+            payload = {"response": serialize_messages_for_pydantic(err_messages)}
             return safe_json_response(payload, 200)
+
+        
+
 
 def async_agent_response(prompt: str, history: str, user_id: str, research: bool = False) -> Any:
     loop = asyncio.new_event_loop()
