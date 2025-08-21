@@ -441,6 +441,7 @@ ckan.module("chat-module", function ($, _) {
         };
         self.appendMessage(messageObject);
         self.saveChat([messageObject], self.currentChatLabel);
+        self.loadPreviousChats(); // Update sidebar when user message is saved
         var chatHistory = self.getChatHistory();
         var sendButton = this.el.find("#sendButton");
         var spinner = sendButton.find(".spinner-border");
@@ -496,7 +497,7 @@ ckan.module("chat-module", function ($, _) {
       if (chatIndex !== -1) {
         chats[chatIndex].title = newLabel;
         localStorage.setItem("previousChats", JSON.stringify(chats));
-        $("#chatList li").eq(chatIndex).text(newLabel); // Update the text of the corresponding list item
+        this.loadPreviousChats(); // Refresh the entire sidebar to ensure proper display
       }
     },
 
@@ -518,6 +519,7 @@ ckan.module("chat-module", function ($, _) {
         timeout: 200000, // Timeout auf 200 Sekunden setzen (200000 ms)
         success: function (data) {
           const chatindex = self.saveChat(data.response, label);
+          self.loadPreviousChats(); // Update sidebar to show the new chat
           self.loadChat(chatindex);
           if (callback) callback();
         },
