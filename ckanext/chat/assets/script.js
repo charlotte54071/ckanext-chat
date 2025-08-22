@@ -167,7 +167,7 @@ ckan.module("chat-module", function ($, _) {
       });
       // Since the sidebar is rendered outside the module container, bind using a global selector
       $("#chatList").on("click", "li", function () {
-        var index = $(this).index();
+        var index = $(this).data("index");
         self.loadChat(index);
       });
     },
@@ -249,15 +249,31 @@ ckan.module("chat-module", function ($, _) {
         this.newChat();
       }
       var self = this;
-      chats.forEach(function (chat, index) {
-        var listItem = $("<li>")
-          .addClass("list-group-item list-group-item-action")
-          .text(chat.title || "Chat " + (index + 1))
-          .on("click", function () {
-            self.loadChat(index);
-          });
-        chatListElement.append(listItem);
+      // Build an index with last activity timestamp, then sort newest first
+      var indexed = chats.map(function (chat, index) {
+        var lastTs = null;
+        if (Array.isArray(chat.messages) && chat.messages.length > 0) {
+          var lastMsg = chat.messages[chat.messages.length - 1];
+          lastTs = new Date(lastMsg.timestamp).getTime() || 0;
+        } else {
+          lastTs = 0;
+        }
+        return { index: index, chat: chat, lastTs: lastTs };
       });
+      indexed
+        .sort(function (a, b) { return b.lastTs - a.lastTs; })
+        .forEach(function (item, position) {
+          var chat = item.chat;
+          var originalIndex = item.index;
+          var listItem = $("<li>")
+            .addClass("list-group-item list-group-item-action")
+            .attr("data-index", originalIndex)
+            .text(chat.title || "Chat " + (originalIndex + 1))
+            .on("click", function () {
+              self.loadChat(originalIndex);
+            });
+          chatListElement.append(listItem);
+        });
     },
 
     // Load a specific chat based on its index in localStorage
@@ -279,7 +295,7 @@ ckan.module("chat-module", function ($, _) {
         messagesDiv.empty();
         // Highlight the active chat
         $("#chatList li").removeClass("active"); // Remove active class from all
-        $("#chatList li").eq(index).addClass("active"); // Add active class to the selected chat
+        $("#chatList li[data-index='" + index + "']").addClass("active"); // Add active class to the selected chat
         var self = this;
         chat.messages.forEach(function (msg) {
           self.appendMessage(msg);
@@ -543,8 +559,10 @@ ckan.module("chat-module", function ($, _) {
         chats.push({ title: label, messages: [] });
         existingChatIndex = chats.length - 1;
       }
+      // Normalize and store messages with ISO timestamps for consistent ordering
+      var normalized = convertTimestampsToISO(newMessages);
       chats[existingChatIndex].messages =
-        chats[existingChatIndex].messages.concat(newMessages);
+        chats[existingChatIndex].messages.concat(normalized);
       localStorage.setItem("previousChats", JSON.stringify(chats));
       return existingChatIndex;
     },
