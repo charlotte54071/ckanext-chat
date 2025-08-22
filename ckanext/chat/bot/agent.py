@@ -51,7 +51,7 @@ app = Flask(__name__)
 # --------------------- Model & Agent Setup ---------------------
 
 # Azure Setup
-deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o-mini")
+deployment = toolkit.config.get("ckanext.chat.deployment", "gpt-4o")
 rag_model_settings = OpenAIModelSettings(
     model_name=deployment,
     max_tokens=16384,
@@ -63,18 +63,18 @@ model = OpenAIModel(
         azure_endpoint=toolkit.config.get(
             "ckanext.chat.completion_url", "https://your.chat.api"
         ),
-        api_version="2024-06-01",
+        api_version="2024-12-01-preview",
         api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
     ),
 )
 
 think_model = OpenAIModel(
-    "gpt-4.1-mini",
+    "gpt-4o",
     provider=AzureProvider(
         azure_endpoint=toolkit.config.get(
             "ckanext.chat.completion_url", "https://your.chat.api"
         ),
-        api_version="2024-06-01",
+        api_version="2024-12-01-preview",
         api_key=toolkit.config.get("ckanext.chat.api_token", "your-api-token"),
     ),
 )
