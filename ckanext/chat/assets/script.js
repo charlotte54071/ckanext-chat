@@ -574,8 +574,21 @@ ckan.module("chat-module", function ($, _) {
       }
       // Normalize and store messages with ISO timestamps for consistent ordering
       var normalized = convertTimestampsToISO(newMessages);
-      chats[existingChatIndex].messages =
-        chats[existingChatIndex].messages.concat(normalized);
+      // Enforce strictly increasing timestamps to preserve message order on reload
+      var existing = chats[existingChatIndex].messages || [];
+      var lastTs = existing.length
+        ? Date.parse(existing[existing.length - 1].timestamp) || 0
+        : 0;
+      normalized.forEach(function (m) {
+        var t = Date.parse(m.timestamp);
+        if (isNaN(t) || t <= lastTs) {
+          lastTs = lastTs + 1; // add 1 ms
+          m.timestamp = new Date(lastTs).toISOString();
+        } else {
+          lastTs = t;
+        }
+      });
+      chats[existingChatIndex].messages = existing.concat(normalized);
       localStorage.setItem("previousChats", JSON.stringify(chats));
       return existingChatIndex;
     },
@@ -682,10 +695,46 @@ ckan.module("chat-module", function ($, _) {
         return chat.title === "Current Chat";
       });
       if (currentIdx !== -1 && Array.isArray(chats[currentIdx].messages) && chats[currentIdx].messages.length > 0) {
-        var freezeTitle = new Date().toLocaleString();
-        chats[currentIdx].title = freezeTitle;
+        // Try to generate a short title from the first user prompt
+        var firstUser = (chats[currentIdx].messages || []).find(function (m) {
+          return Array.isArray(m.parts) && m.parts.some(function (p) { return p.part_kind === "user-prompt"; });
+        });
+        var firstText = "";
+        if (firstUser) {
+          var up = firstUser.parts.find(function (p) { return p.part_kind === "user-prompt"; });
+          firstText = (up && String(up.content)) || "";
+        }
+        var self = this;
+        if (firstText.trim()) {
+          $.post("chat/ask", { text: "Output only a 3-word title for this question: " + firstText })
+            .done(function (data) {
+              var label = self.getLastEntryText(data.response) || new Date().toLocaleString();
+              self.updateChatTitle("Current Chat", label);
+              self.currentChatLabel = label;
+              // After renaming, create a fresh Current Chat below
+              self._spawnFreshCurrentChat();
+            })
+            .fail(function () {
+              // Fallback to timestamp
+              var fallback = new Date().toLocaleString();
+              self.updateChatTitle("Current Chat", fallback);
+              self.currentChatLabel = fallback;
+              self._spawnFreshCurrentChat();
+            });
+          return; // async path will create the new chat
+        } else {
+          // No user text; fallback rename immediately
+          var freezeTitle = new Date().toLocaleString();
+          chats[currentIdx].title = freezeTitle;
+        }
       }
-      // Create a fresh empty Current Chat
+      // Create a fresh Current Chat synchronously if no async rename happened
+      this._spawnFreshCurrentChat(chats);
+    },
+
+    // Internal helper to append a new empty Current Chat and focus it
+    _spawnFreshCurrentChat: function (chatsSnapshot) {
+      var chats = chatsSnapshot || JSON.parse(localStorage.getItem("previousChats")) || [];
       var newIdx = chats.findIndex(function (chat) { return chat.title === "Current Chat"; });
       if (newIdx === -1) {
         chats.push({ title: "Current Chat", messages: [] });
