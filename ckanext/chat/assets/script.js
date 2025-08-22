@@ -2,6 +2,7 @@ ckan.module("chat-module", function ($, _) {
   "use strict";
   _ = _ || window._; // use underscore if available
   var timeline = [];
+  var seqCounter = 0; // fallback ordering when timestamps are missing
 
   // Private helper: Render Markdown and sanitize output
   function renderMarkdown(content) {
@@ -389,10 +390,10 @@ ckan.module("chat-module", function ($, _) {
           });
         });
       }      
-      const { timestamp, parts } = message;
+      const { timestamp, parts, seq } = message;
       
       // 简化处理：直接添加消息到timeline，后端已处理去重和过滤
-      const messageId = timestamp + JSON.stringify(parts);
+      const messageId = (timestamp || "") + JSON.stringify(parts) + (seq || "");
       const existingMessage = timeline.find(entry => 
         entry.messageId === messageId
       );
@@ -405,11 +406,23 @@ ckan.module("chat-module", function ($, _) {
        timeline.push({
          timestamp: timestamp,
          parts: parts,
-         messageId: messageId
+         messageId: messageId,
+         seq: typeof seq === "number" ? seq : (++seqCounter)
        });
       
-      // Sort timeline by timestamp
-      timeline.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+      // Sort timeline by valid timestamp; fallback to insertion sequence
+      timeline.sort((a, b) => {
+        var ta = Date.parse(a.timestamp);
+        var tb = Date.parse(b.timestamp);
+        var aValid = !isNaN(ta);
+        var bValid = !isNaN(tb);
+        if (aValid && bValid) return ta - tb;
+        if (aValid && !bValid) return -1;
+        if (!aValid && bValid) return 1;
+        var sa = typeof a.seq === "number" ? a.seq : 0;
+        var sb = typeof b.seq === "number" ? b.seq : 0;
+        return sa - sb;
+      });
       updateChatbox();
       chatbox.find("pre code").each(function () {
         if (!$(this).attr("data-highlighted")) {
@@ -664,16 +677,23 @@ ckan.module("chat-module", function ($, _) {
     // Function to start a new chat session
     newChat: function () {
       var chats = JSON.parse(localStorage.getItem("previousChats")) || [];
-      const newchatlabel = "Current Chat";
-      var chatIndex = chats.findIndex(function (chat) {
-        return chat.title === newchatlabel;
+      // If an existing Current Chat has messages, freeze it by renaming to a timestamped title
+      var currentIdx = chats.findIndex(function (chat) {
+        return chat.title === "Current Chat";
       });
-      if (chatIndex === -1) {
-        chats.push({ title: newchatlabel, messages: [] });
+      if (currentIdx !== -1 && Array.isArray(chats[currentIdx].messages) && chats[currentIdx].messages.length > 0) {
+        var freezeTitle = new Date().toLocaleString();
+        chats[currentIdx].title = freezeTitle;
+      }
+      // Create a fresh empty Current Chat
+      var newIdx = chats.findIndex(function (chat) { return chat.title === "Current Chat"; });
+      if (newIdx === -1) {
+        chats.push({ title: "Current Chat", messages: [] });
       } else {
-        chats[chatIndex].messages = [];
+        chats[newIdx].messages = [];
       }
       localStorage.setItem("previousChats", JSON.stringify(chats));
+      this.currentChatLabel = "Current Chat";
       this.loadPreviousChats();
       this.loadChat();
     },
